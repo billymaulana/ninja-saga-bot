@@ -102,6 +102,13 @@ chrome.runtime.onMessage.addListener((msg, sender) => {
     if (msg.fresh && sender.tab) chrome.storage.session.remove(`botHash_${sender.tab.id}`);
     devCheck(sender.tab && sender.tab.id);
   }
+  else if (msg.type === 'telemetry') {
+    fetch('http://127.0.0.1:8777/telemetry', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...msg.data, tabId: sender.tab && sender.tab.id }),
+    }).catch(() => {});
+  }
   else if (msg.type === 'bot-start') startDevServer();
   else if (msg.type === 'bot-stop') stopDevServer();
 });

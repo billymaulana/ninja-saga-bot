@@ -19,8 +19,58 @@ function hashOf(file) {
  * Logs go to stderr: when Chrome launches this file through native-host.js, stdout carries the
  * native messaging protocol and any stray text there would break the connection.
  */
+/*
+ * Telemetry from the bot is written to .status/: status.json (latest report), screen.jpg (latest
+ * screenshot) and history.jsonl (one compact line per report, trimmed to the last 2000).
+ */
+const STATUS_DIR = path.join(DIR, '.status');
+
+function saveTelemetry(body) {
+  const data = JSON.parse(body);
+  fs.mkdirSync(STATUS_DIR, { recursive: true });
+  const { image, ...rest } = data;
+  if (image && image.startsWith('data:image/jpeg;base64,')) {
+    fs.writeFileSync(path.join(STATUS_DIR, 'screen.jpg'), Buffer.from(image.slice(23), 'base64'));
+    rest.screenAt = rest.at;
+  } else {
+    try {
+      rest.screenAt = JSON.parse(fs.readFileSync(path.join(STATUS_DIR, 'status.json'), 'utf8')).screenAt;
+    } catch (e) {
+      rest.screenAt = null;
+    }
+  }
+  fs.writeFileSync(path.join(STATUS_DIR, 'status.json'), JSON.stringify(rest, null, 2));
+  const r = rest.report || {};
+  const line = JSON.stringify({ at: rest.at, browser: rest.browser, running: rest.running, status: rest.status, missions: rest.missions, turns: rest.turns, level: r.level, xp: r.xpNow && r.xpNow.xp, background: r.background });
+  const historyFile = path.join(STATUS_DIR, 'history.jsonl');
+  let lines = [];
+  try {
+    lines = fs.readFileSync(historyFile, 'utf8').split('\n').filter(Boolean);
+  } catch (e) {
+    lines = [];
+  }
+  fs.writeFileSync(historyFile, lines.concat(line).slice(-2000).join('\n') + '\n');
+}
+
 function start() {
   const server = http.createServer((req, res) => {
+    if (req.method === 'POST' && req.url === '/telemetry') {
+      let body = '';
+      req.on('data', (chunk) => {
+        body += chunk;
+        if (body.length > 5e6) req.destroy();
+      });
+      req.on('end', () => {
+        try {
+          saveTelemetry(body);
+          res.writeHead(204, { 'Access-Control-Allow-Origin': '*' });
+        } catch (e) {
+          res.writeHead(400);
+        }
+        res.end();
+      });
+      return;
+    }
     if (req.url !== '/version') {
       res.writeHead(404);
       res.end();
@@ -35,7 +85,7 @@ function start() {
     res.end(JSON.stringify(version));
   });
   server.on('error', (e) => {
-    if (e.code === 'EADDRINUSE') console.error(`port ${PORT} sudah dipakai, server lain sudah jalan`);
+    if (e.code === 'EADDRINUSE') console.error(`port ${PORT} is in use, another server is already running`);
     else console.error(e);
   });
   server.listen(PORT, '127.0.0.1', () => {

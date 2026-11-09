@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Ninja Saga Mission Bot",
   "version": "1.2.0",
-  "description": "Auto-run misi Ninja Saga dengan patch memori, kunci chakra, speed, dan hot reload saat development.",
+  "description": "Runs Ninja Saga missions automatically, with memory patches, chakra lock, game speed and hot reload for development.",
   "permissions": ["scripting", "storage", "tabs", "nativeMessaging"],
   "host_permissions": ["https://ninjasaga.cc/*", "http://127.0.0.1:8777/*"],
   "background": {

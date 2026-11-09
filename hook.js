@@ -273,17 +273,40 @@
     };
   }
 
+  /*
+   * Ruffle always has one frame request outstanding. One made while the tab was visible sits in
+   * the browser's rAF (which stops in hidden tabs) or a page timeout (throttled to once a minute),
+   * so the game froze as soon as the tab was hidden. Every request is tracked and, on hiding,
+   * moved to the worker tick; a request runs at most once, whichever path reaches it first.
+   */
+  const pendingFrames = new Set();
+  function startHiddenTicker() {
+    if (hiddenRunning || !hiddenTicker) return;
+    hiddenRunning = true;
+    hiddenTicker.postMessage(speed >= 5 ? 4 : 16);
+  }
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden || !hiddenTicker || !pendingFrames.size) return;
+    for (const run of pendingFrames) hiddenQueue.push(run);
+    startHiddenTicker();
+  });
+
   window.requestAnimationFrame = (cb) => {
+    let done = false;
+    const run = (ts) => {
+      if (done) return;
+      done = true;
+      pendingFrames.delete(run);
+      cb(ts);
+    };
+    pendingFrames.add(run);
     if (document.hidden && hiddenTicker) {
-      hiddenQueue.push(cb);
-      if (!hiddenRunning) {
-        hiddenRunning = true;
-        hiddenTicker.postMessage(speed >= 5 ? 4 : 16);
-      }
+      hiddenQueue.push(run);
+      startHiddenTicker();
       return hiddenQueue.length;
     }
     if (speed >= 5) {
-      fastQueue.push(cb);
+      fastQueue.push(run);
       if (!fastScheduled) {
         fastScheduled = true;
         if (speed > 5) tickChannel.port2.postMessage(0);
@@ -291,7 +314,7 @@
       }
       return fastQueue.length;
     }
-    return realRaf((ts) => cb(virtual(ts)));
+    return realRaf((ts) => run(virtual(ts)));
   };
   window.__nsSetSpeed = (requested) => {
     userSpeed = Math.max(1, Math.min(MAX_SPEED, Number(requested) || 1));

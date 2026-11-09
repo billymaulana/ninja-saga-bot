@@ -20,5 +20,6 @@
   window.addEventListener('message', (event) => {
     if (event.source !== window || !event.data || event.data.source !== 'nsBot') return;
     if (event.data.type === 'start' || event.data.type === 'stop') send({ type: `bot-${event.data.type}` });
+    else if (event.data.type === 'telemetry') send({ type: 'telemetry', data: event.data.data });
   });
 })();

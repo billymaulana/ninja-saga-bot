@@ -1,183 +1,189 @@
 # Ninja Saga Mission Bot
 
-Extension Chrome lokal (tanpa AI, tanpa token) yang mengulang misi Grade A
-**The Fire-Thunder Alliance** secara otomatis.
+A local Chrome/Brave extension (no AI, no API tokens) that runs Ninja Saga missions
+automatically on ninjasaga.cc, which plays the original SWF through Ruffle.
 
-## Pasang
+## Install
 
-1. Buka `chrome://extensions`
-2. Aktifkan **Developer mode** (kanan atas)
-3. Klik **Load unpacked**, pilih folder `~/ninja-saga-bot`
-4. Buka / reload `https://ninjasaga.cc/play`, login, tunggu desa tampil
-5. Panel **Ninja Saga Bot** muncul di kanan bawah: klik **Start** atau tekan `Alt+S`
+1. Open `chrome://extensions` (or `brave://extensions`)
+2. Turn on **Developer mode** (top right)
+3. Click **Load unpacked** and pick the `ninja-saga-bot` folder
+4. Open or reload `https://ninjasaga.cc/play`, log in and wait for the village
+5. The **Ninja Saga Bot** panel appears bottom right: click **Start** or press `Alt+S`
 
 ## Hot reload (development)
 
 ```
-node ~/ninja-saga-bot/dev-server.js
+node dev-server.js
 ```
 
-Server di `127.0.0.1:8777` memantau file. Background extension mengecek tiap 2 detik:
+The server on `127.0.0.1:8777` watches the files; the extension background checks every 2 seconds:
 
-| File berubah | Yang terjadi |
+| Changed file | What happens |
 |---|---|
-| `bot.js` | Disuntikkan langsung ke tab game; game tidak reload, hitungan misi & kunci chakra diwarisi |
-| `hook.js` | Panel menampilkan pemberitahuan; perlu reload halaman di antara misi |
-| `manifest.json`, `background.js`, `poller.js` | Extension reload sendiri lalu menyuntik ulang bot ke tab |
+| `bot.js` | Injected straight into the game tab; the game does not reload, mission count and chakra lock carry over |
+| `hook.js` | The extension reloads and the game page reloads the next time the bot is in the village |
+| `manifest.json`, `background.js`, `poller.js` | The extension reloads itself and re-injects the bot |
 
-Tanpa server, extension berjalan normal; hot reload saja yang tidak aktif.
+Without the server the extension works normally; only hot reload is off.
 
-### Server otomatis saat Start (Native Messaging)
+### Start the server with the bot (Native Messaging)
 
-Daftarkan sekali (perlu dijalankan sendiri):
+Register once:
 
 ```
 mkdir -p ~/Library/Application\ Support/Google/Chrome/NativeMessagingHosts
-cp ~/ninja-saga-bot/com.billy.nsbot.json ~/Library/Application\ Support/Google/Chrome/NativeMessagingHosts/
+cp com.billy.nsbot.json ~/Library/Application\ Support/Google/Chrome/NativeMessagingHosts/
 ```
 
-Setelah itu Start di panel membuat Chrome menjalankan `native-host.js` (server
-hot reload), dan Stop mematikannya. Jika ID extension berubah (misalnya folder
-dipindah), sesuaikan `allowed_origins` di `com.billy.nsbot.json`.
+Edit `path` in `com.billy.nsbot.json` to where `native-host.js` lives on your machine, and
+`allowed_origins` to your extension ID. Start in the panel then launches `native-host.js`
+(the hot reload server) and Stop shuts it down.
 
-## Cara kerja
+## How it works
 
-Bot membaca piksel canvas game (Ruffle) dan mengenali layar:
+The bot reads pixels from the game canvas and recognises screens:
 
-| Layar | Tanda | Aksi |
+| Screen | Sign | Action |
 |---|---|---|
-| Giliran kita | tombol Run biru + Dodge oranye | pilih jurus, klik musuh |
-| Battle (giliran musuh / berjalan) | timeline ungu atau bar Goal kuning | tunggu |
-| Dialog cerita | bar hitam atas & bawah | klik |
-| Victory / Mission Success / mulai misi | gumpalan hijau checkmark | klik checkmark |
-| Desa | emblem rank ungu di atas | Mission Room > Grade A > hal. 2 > Fire-Thunder > check |
-| Popup tutorial / panel (Shop, dll.) | tombol X merah kecil berisi silang putih | klik X (tombol hijau "Go to Academy" sengaja tidak diklik) |
-| Peta misi (area bergulir) | panah oranye "Go!" kanan/kiri | selama masih ada karakter di area, klik karakter terbesar dulu (musuh); "Go!" baru diklik bila tidak ada musuh tersisa. Karakter yang diklik tapi tidak memicu battle = pemain: warnanya diingat dan dilewati berikutnya |
-| Cutscene "klik musuh" | tidak dikenali > 0,6 dtk | klik karakter yang terdeteksi (maks. 3), baru sapu klik grid bila tidak ada |
+| Your turn | blue Run + orange Dodge buttons | attack or use jutsu on an enemy |
+| Battle (enemy turn / animations) | purple timeline or yellow goal bar | wait |
+| Story dialog | black bars top and bottom | click through |
+| Victory / Mission Success / mission start | green checkmark | click the checkmark |
+| Village | rank progress bar at the top | Mission Room > Grade > page > row > checkmark |
+| Tutorial popup / panel (Shop, etc.) | small red X with a white cross | click X (the green "Go to Academy" button is never clicked) |
+| Mission map (scrolling area) | orange "Go!" arrow right/left | click enemies first; "Go!" only when none are left. A character that does not start a fight is the player: its colours are remembered and skipped |
+| "Click the enemy" cutscene | unrecognised for > 0.6 s | click detected characters (max. 3), otherwise wait without clicking |
 
-### Patch memori (pengganti MacCheat)
+### Choosing the mission
 
-`hook.js` berjalan di iframe `/emulator` sebelum Ruffle dimuat dan menangkap
-`WebAssembly.Memory` milik Ruffle. Setiap kali bot berada di desa (artinya
-karakter sudah dipilih) untuk pertama kalinya, sebelum membuka Mission Room,
-bot memindai memori
-untuk `A2 25 E8 07 A3 A2` lalu mengubah semua hasilnya menjadi
-`A2 25 E8 07 A9 A2`. Jika tidak ada hasil (dan belum pernah di-patch), bot
-mencoba ulang hingga 20 kali lalu berhenti dengan pesan di panel.
+With **Auto highest-XP mission** on, the bot picks the mission with the highest base XP whose
+required level is at or below the character's level, using the mission table from
+`MissionDetail` in `data_library_en.swf` (sorted by level, no special missions; Grade A/B/C
+buttons = internal grades C/D/E). XP does not rise on every row, so this is not simply the last
+unlocked row. If that mission does not start (wrong level), the bot falls back to scanning the
+padlocks on screen.
 
-Patch hanya dilakukan sekali per sesi halaman. Reload atau login ulang membuat
-Ruffle memakai memori baru, sehingga patch otomatis dijalankan lagi.
+The mission list reopens on the page viewed last. Pages are recognised by a fingerprint of the
+title bars, learned per grade (`localStorage.nsPageFps`), so the bot presses next/prev straight
+to the target page and only rewinds when a page has never been seen. A page turn is judged on
+the settled titles, so a slow slide never causes a double press.
 
-Hook hanya bekerja jika extension sudah aktif **sebelum** halaman game dimuat,
-jadi setelah memasang/memperbarui extension selalu reload halaman game.
+### Level and XP from the HUD
 
-### Pengaturan (panel > Pengaturan)
+The HUD prints `current / needed` XP in white over the XP bar. The bot reads these digits
+(glyph samples matched against an 8x12 whiteness mask) and accepts a reading only when the
+needed figure equals `round(L x 130 x 50^(L/50))` (`Formula.getXpByLv`) for some level L, which
+also gives the level exactly. **Current level** in the panel is updated from it every 5 seconds,
+also while the bot is stopped; one level up goes through the normal level-up handling so exam
+levels and targets still stop the bot. Reading the digits needs a high-DPI (Retina) canvas;
+otherwise the bot falls back to the length of the bar.
 
-| Opsi | Default | Keterangan |
+### Memory patches
+
+`hook.js` runs in the `/emulator` iframe before Ruffle loads and captures Ruffle's
+`WebAssembly.Memory`. Each cheat is applied on its own per game memory:
+
+| Cheat | Pattern | Effect |
 |---|---|---|
-| Slot karakter | 1 | Kartu di layar pilih karakter (1-2 baris atas, 3-4 tengah, 5-6 bawah). Sesuaikan saat ganti karakter: dipakai saat login ulang setelah reload pemulihan |
-| Level saat ini | 0 | Diisi sekali; naik sendiri tiap layar Level Up. 0 = fitur berhenti-di-level nonaktif |
-| Target level | 0 | Level tujuan untuk perkiraan di Progres; bot berhenti di desa saat tercapai. 0 = level berhenti berikutnya |
-| Berhenti di level | 20,40,60,80,100 | Bot berhenti di desa saat level ujian rank tercapai |
-| Auto misi XP tertinggi | on | Pindai Grade A→B→C, ambil baris terbuka terakhir sebelum gembok; pindai ulang tiap Start, tiap level up, dan bila slot/level di pengaturan berubah |
-| Grade misi | A | Tombol Grade di Mission Room (A/B/C) |
-| Halaman | 2 | Jumlah klik panah kanan = halaman - 1 |
-| Baris | 1 | Misi ke-1/2/3 di halaman itu |
-| Urutan slot jurus | 1,8,7,3,6,5,4 | Slot 1-4 kiri, 5-8 kanan tombol Attack; slot yang tidak ditulis dicoba terakhir |
-| Slot heal | 2 | Dipakai hanya saat HP < 35%; 0 = tidak ada |
-| Mode | Bot otomatis | `Cheat saja`: kamu bermain sendiri, bot hanya memasang cheat yang dicentang (jurus, serangan biasa, chakra) tanpa klik |
-| Suara game | off | Suara dibisukan lewat gain 0 (AudioContext tetap jalan karena battle menunggu event suara selesai) |
-| Gaya serangan | Basic attack | `Basic attack`: tiap giliran langsung Attack ke musuh (heal tetap saat HP rendah); `Jurus`: pakai urutan slot jurus seperti sebelumnya |
-| Cheat serangan biasa | on | Damage tombol Attack = 400000 (`BattleProcessor.setCharacterCommand`: nilai bawaan game untuk ID admin; lompatan `ifnge +6` diubah jadi `+0`). AOB `24 00 0F 06 00 00 2D A6 01 75 63 08` -> `...0F 00 00 00...` |
-| Patch memori AOB | on | `A2 25 E8 07 A3 A2` -> `...A9 A2` (AVM2: `÷1000` jadi `|1000` di `calcSkillDamage`) |
-| Kunci chakra | on | Chakra ditahan penuh |
-| Pulih otomatis | on | Reload + lanjut otomatis saat error/macet |
+| Jutsu damage (AOB) | `A2 25 E8 07 A3 A2` -> `...A9 A2` | AVM2 `/1000` becomes `\|1000` in `calcSkillDamage` |
+| Basic attack 400000 | `24 00 0F 06 00 00 2D A6 01 75 63 08` -> `...0F 00 00 00...` | `BattleProcessor.setCharacterCommand` gives admin IDs a weapon damage of 400000; the `ifnge +6` jump becomes `+0` |
+| Lock chakra | number slot between two slots holding 100, HP 32 bytes before, gold 32 bytes after (largest gold wins) | chakra is held full |
 
-Pengaturan tersimpan di localStorage dan berlaku pada navigasi misi berikutnya.
-Misi yang terkunci (gembok) tidak bisa dimulai; bot akan terus mencoba.
+Unticking a cheat does not restore the original bytes; reload the page in the village to drop
+a patch. The hook only works when the extension is active **before** the game page loads.
 
-### Pengaman Token
+### Settings
 
-Selama bot berjalan, `hook.js` membaca nama layanan setiap panggilan AMF dan **menolak**
-panggilan yang membeli atau memakai Token: `CharacterDAO.buyItem`, `buyPet`, `trainSkill`,
-`trainPetSkill`, `instantTrainByToken`, `resetAPbyToken`, `saveResetAP`,
-`CharacterService.reviveBattleCharacter`, serta nama lain yang mengandung `.buy`,
-`purchase` atau `ByToken`. Saat bot berhenti, pembelian manual tetap normal.
+| Option | Default | Notes |
+|---|---|---|
+| Character slot | 1 | Card on the character select screen (1-2 top row, 3-4 middle, 5-6 bottom); used when logging back in after a recovery reload |
+| Current level | 0 | Filled from the HUD; also increases on every Level Up screen |
+| Target level | 0 | Goal for the progress bar; the bot stops in the village when reached. 0 = next stop level |
+| Stop at levels | 20,40,60,80,100 | Rank exam levels; the bot stops in the village there |
+| Auto highest-XP mission | on | See "Choosing the mission" |
+| Grade / Page / Row | A / 2 / 1 | Manual mission when auto is off |
+| Attack style | Basic attack | `Basic attack`: Attack every turn (heal when HP is low); `Jutsu`: use the jutsu slot order |
+| Jutsu slot order | 1,8,7,3,6,5,4 | Slots 1-4 left, 5-8 right of the Attack button; unlisted slots are tried last. Saved per mission |
+| Heal slot | 2 | Used only when HP < 35%; 0 = none |
+| Mode | Auto bot | `Cheat only`: you play yourself, the bot only applies the ticked cheats |
+| Game sound | off | Muted through a gain of 0 (AudioContext keeps running: battles wait for sound events) |
+| Auto recovery | on | Reload and resume on a Ruffle error or a 90 s stall |
+| Stable turbo | on | See "Speed" |
+| Extreme battle | off | See "Speed" |
 
-- `localStorage.nsServiceLog`: 80 panggilan server terakhir (nama layanan, bot jalan/tidak)
-- `localStorage.nsBlockedCalls`: 50 panggilan yang diblokir
+Settings are kept in localStorage and apply from the next mission navigation.
 
-### Panel situs (Store dll.)
+### Speed
 
-Klik liar pada tombol toko di dalam game memanggil `showPanel(...)` milik situs
-(lewat ExternalInterface) dan memindahkan tab ke `/store` tanpa reload. Selama bot
-berjalan panggilan non-Play diabaikan (dicatat di `window.__nsBlockedPanels`);
-klik manual tetap bekerja. Jika URL tetap bergeser, bot mengklik menu PLAY situs
-sehingga game kembali tanpa reload.
+The 1x-5x buttons speed up the game clock (`requestAnimationFrame`, `performance.now` and the
+audio clock in the iframe). Battles wait for sound-complete events, so the audio clock is scaled
+too. While any call to the game server is pending, the clock drops to 1x; otherwise network
+timeouts would also be sped up and the game shows "Sorry, you have lost connection".
 
-### Panel hitungan
+**Stable turbo** switches speed per phase: battles at the highest safe speed (up to 5x),
+everything else at 4x. A page load the bot did not ask for while running (lost connection,
+Ruffle crash, stall) counts against the active phase, which drops one step; after 25 clean
+missions it tries one step higher, unless that speed already failed twice.
 
-Baris yang ditampilkan: nama misi + level + XP dasar (dari data game), level -> target,
-jumlah misi dijalankan, durasi per misi untuk tiap kecepatan (1x-5x, median), XP per
-misi (diukur dari bilah XP, sebelum terukur memakai XP dasar), misi ke level berikutnya
-(sudah/total, sisa, waktu), sisa misi dan waktu sampai target.
+**Extreme battle** lets battles climb above 5x (up to 8x, one step every 5 clean missions).
+Above 5x frames are driven by a `MessageChannel` tick, which has no 4 ms timer clamp; this keeps
+one CPU core busy during battles.
 
-Di bawah status: misi yang dijalankan, level saat ini -> target (level berhenti berikutnya),
-jumlah misi dijalankan dan lama sesi, median menit per misi, rata-rata misi per level
-(setelah 2x naik level), sisa misi dan perkiraan waktu sampai target. Data tersimpan di
-`localStorage.nsBotStats`; tombol "Reset hitungan misi" di Pengaturan memulai ulang.
+### Token guard
 
-### Layar tidak dikenal
+While the bot runs, `hook.js` reads the service name of every AMF call and **blocks** calls that
+buy or spend Tokens: `CharacterDAO.buyItem`, `buyPet`, `trainSkill`, `trainPetSkill`,
+`instantTrainByToken`, `resetAPbyToken`, `saveResetAP`, `CharacterService.reviveBattleCharacter`,
+and any name containing `.buy`, `purchase` or `ByToken`. With the bot stopped, manual purchases
+work normally.
 
-Jika bot berada di layar yang tidak dikenalinya lebih dari 3 detik, atau tepat
-sebelum reload karena error, gambar kecil layar disimpan di
-`localStorage.nsBotUnknownScreens` (3 terakhir, beserta alasan reload dan status bot) untuk dianalisis.
+- `localStorage.nsServiceLog`: last 80 server calls (service names, bot running or not)
+- `localStorage.nsBlockedCalls`: last 50 blocked calls
+- `localStorage.nsServerLog`: last 40 calls with status, duration and game speed
 
-### Kunci chakra
+### Site panels (Store etc.)
 
-Bot mencari objek karakter di memori (slot chakra diapit dua slot bernilai 100,
-HP 32 byte sebelumnya, gold 32 byte sesudahnya; dipilih yang gold-nya terbesar)
-lalu menahan chakra di nilai penuh. Charge praktis tidak terpakai.
+Stray clicks on in-game shop buttons call the site's `showPanel(...)` through ExternalInterface
+and switch the tab to `/store` without a reload. While the bot runs, non-Play switches are
+ignored (logged in `window.__nsBlockedPanels`); if the URL still drifts, the bot clicks the
+site's PLAY link so the game comes back without a reload.
 
-### Kecepatan
+### Progress panel
 
-Tombol 1x/2x/3x/5x di panel mempercepat jam game (requestAnimationFrame dan
-performance.now di iframe). Pilihan tersimpan. Dengan renderer Canvas, di atas 3x
-hasilnya hampir sama karena CPU yang jadi batas (terukur: 3x 125 dtk/misi, 5x 114).
+- **Progress bar**: XP from where the current target was set to the target, plus the bar for the
+  current level, the XP of the last mission and missions left (to the next level and to the
+  target). Later levels are costed with the best mission they unlock.
+- **XP per mission** is measured from HUD readings over every finished mission since an anchor
+  (failed missions included), not from a single reading.
+- **Time per mission** is the median gap between mission starts, per game speed.
+- **Waste/mission**: missed attacks, Charge turns, failed enemy clicks, page arrow re-presses,
+  missions that failed to open and time on unknown screens.
+- **Steps**: time spent per step of the last mission; **Report slow** saves the current step
+  with a screenshot to `localStorage.nsSlowReports`.
 
-Selama ada panggilan ke server game (setiap `fetch` POST/AMF, apa pun host-nya,
-termasuk server `*.b-cdn.net` saat memilih server lain) jam game kembali 1x.
-Tanpa ini batas waktu jaringan game ikut dipercepat dan muncul
-"Sorry, you have lost connection to the server".
+`__nsBot.report()` in the console returns all of the above as JSON (no images).
 
-### Pemulihan otomatis
+### Unknown screens
 
-Jika Ruffle error atau tidak ada kemajuan 90 detik, halaman di-reload dengan
-tanda lanjut otomatis: bot memilih karakter Billbravo, Play, patch ulang,
-kunci chakra ulang, set kecepatan, dan memulai misi baru. Stop mematikan tanda ini.
+If the bot sits on a screen it does not recognise for more than 3 seconds, or right before an
+error reload, a small screenshot is saved to `localStorage.nsBotUnknownScreens` (last 3, with
+the reload reason and bot status).
 
-Cooldown dibaca dari ikon: angka sisa giliran tampil di pojok kanan bawah ikon. Pojok
-ikon dicatat saat jurus itu berhasil keluar (pasti siap), lalu ikon yang pojoknya
-berbeda dianggap cooldown dan tidak diklik. Bila tidak ada jurus siap: **Attack**
-(chakra sudah terkunci penuh, jadi Charge hanya cadangan terakhir).
+### Jutsu cooldowns
 
-Nama misi dan XP dasarnya diambil dari tabel `MissionDetail` di `data_library_en.swf`
-(urut level, tanpa misi special; tombol Grade A/B/C = grade internal C/D/E).
-Kebutuhan XP level: `round(L x 130 x 50^(L/50))` (`Formula.getXpByLv`).
+The remaining turns show as a digit in the icon's bottom-right corner. The corner is recorded
+when the jutsu fires (so it was ready); an icon whose corner differs is on cooldown and is not
+clicked. Jutsu that are cooling down are retried 2 turns after firing, or 2/4/8 turns after
+failing, so every jutsu keeps rotating in long boss fights. With chakra locked, **Attack** is the
+fallback and **Charge** the last resort.
 
-Prioritas jurus mengikuti "Urutan slot jurus". Jurus yang sedang cooldown dilewati
-dan dicoba lagi: 2 giliran setelah berhasil dipakai, atau 2/4/8 giliran setelah gagal
-keluar. Jadi di pertarungan panjang (bos akhir misi) semua jurus tetap bergiliran.
-**Charge** hanya dipakai jika tidak ada satu pun jurus yang keluar pada giliran itu.
-**Refresh** hanya dipakai saat HP < 35%.
+## Limits
 
-## Batasan
-
-- Tab game boleh di latar belakang: saat tersembunyi, frame Ruffle dan jeda bot
-  digerakkan timer Web Worker (tidak ikut diperlambat Chrome). Jangan masukkan
-  ninjasaga.cc ke daftar tab yang dibekukan Memory Saver Chrome.
-- Jangan ubah zoom halaman atau ukuran jendela secara drastis saat bot jalan.
-- Bot tidak membaca level; hentikan manual (Stop / `Alt+S`) saat level 60.
-- Posisi jurus mengikuti urutan slot sekarang. Jika slot jutsu diubah,
-  sesuaikan `SKILLS` di `bot.js`.
-- Melanggar aturan server soal bot bisa berujung ban akun; risiko ditanggung pemakai.
+- The game tab may stay in the background: while hidden, Ruffle frames and bot timers are driven
+  by a Web Worker timer, which the browser does not throttle. Add `ninjasaga.cc` to the sites
+  Memory Saver always keeps active, or the tab gets discarded. On macOS, App Nap can be turned
+  off per browser with `defaults write com.brave.Browser NSAppSleepDisabled -bool YES`.
+- Do not change the page zoom or resize the window drastically while the bot runs.
+- Using bots or cheats breaks the server's rules and can get the account banned; use at your
+  own risk.

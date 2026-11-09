@@ -121,7 +121,11 @@
   }
   const sleep = (ms) =>
     new Promise((r) => {
-      if (!sleepWorker || !document.hidden) {
+      /*
+       * The worker times every wait, not only hidden ones: a wait that starts while the tab is
+       * visible and runs on after a switch to another tab would otherwise be throttled.
+       */
+      if (!sleepWorker) {
         setTimeout(r, ms);
         return;
       }
@@ -129,6 +133,34 @@
       sleepWaiters.set(id, r);
       sleepWorker.postMessage({ id, ms });
     });
+  /*
+   * Proof that the bot keeps playing while its tab is hidden: time hidden and the loop passes,
+   * turns and mission starts that happened meanwhile, plus the longest gap between loop passes.
+   */
+  const background = { hiddenMs: 0, hiddenSince: document.hidden ? Date.now() : 0, loops: 0, turns: 0, missions: 0, longestGapMs: 0, lastLoop: 0 };
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) background.hiddenSince = Date.now();
+    else if (background.hiddenSince) {
+      background.hiddenMs += Date.now() - background.hiddenSince;
+      background.hiddenSince = 0;
+    }
+  });
+  function noteLoop() {
+    const now = Date.now();
+    if (document.hidden) {
+      background.loops++;
+      if (background.lastLoop) background.longestGapMs = Math.max(background.longestGapMs, now - background.lastLoop);
+    }
+    background.lastLoop = now;
+  }
+  const backgroundSummary = () => ({
+    hiddenNow: document.hidden,
+    hiddenMin: +((background.hiddenMs + (background.hiddenSince ? Date.now() - background.hiddenSince : 0)) / 60000).toFixed(1),
+    loops: background.loops,
+    turns: background.turns,
+    missions: background.missions,
+    longestGapS: +(background.longestGapMs / 1000).toFixed(1),
+  });
   const near = (a, b, t = 30) =>
     Math.abs(a[0] - b[0]) < t && Math.abs(a[1] - b[1]) < t && Math.abs(a[2] - b[2]) < t;
 
@@ -754,7 +786,7 @@
         hits.forEach((at) => u8.set(PATCH_TO, at));
         const total = findAll(u8, PATCH_TO).length;
         if (mem === memory) state.patches.jutsu = total;
-        state.jutsuPatch = total > 0 ? `aktif (${total} pola)` : 'pola tidak ditemukan';
+        state.jutsuPatch = total > 0 ? `active (${total} patterns)` : 'pattern not found';
         patched += hits.length;
         already += total - hits.length;
       }
@@ -763,7 +795,7 @@
         hits.forEach((at) => u8.set(ATTACK_TO, at));
         const total = findAll(u8, ATTACK_TO).length;
         if (mem === memory) state.patches.attack = total;
-        state.attackPatch = total > 0 ? 'aktif' : 'tidak ditemukan';
+        state.attackPatch = total > 0 ? 'active' : 'not found';
         patched += hits.length;
         already += total - hits.length;
       }
@@ -782,15 +814,15 @@
     for (let attempt = 1; attempt <= 20 && state.running; attempt++) {
       const r = patchMemory();
       if (!r.ready) {
-        setStatus('Memori game belum tertangkap. Reload halaman setelah extension aktif.');
+        setStatus('Game memory not captured yet. Reload the page after the extension is active.');
         return false;
       }
       if (r.patched + r.already > 0) {
-        state.lastPatch = `${r.patched} diubah, ${r.already} sudah`;
-        setStatus(`Patch memori OK (jurus: ${config.patchMemory ? state.jutsuPatch : 'mati'}; serangan biasa: ${config.attackCheat ? state.attackPatch : 'mati'})`);
+        state.lastPatch = `${r.patched} patched, ${r.already} already`;
+        setStatus(`Memory patch OK (jutsu: ${config.patchMemory ? state.jutsuPatch : 'off'}; basic attack: ${config.attackCheat ? state.attackPatch : 'off'})`);
         return true;
       }
-      setStatus(`Scan memori kosong, coba lagi (${attempt}/20)...`);
+      setStatus(`Memory scan empty, retrying (${attempt}/20)...`);
       await sleep(1500);
     }
     return false;
@@ -863,12 +895,12 @@
    */
   const WASTE_KEY = 'nsBotWaste';
   const WASTE_LABELS = {
-    miss: 'serangan meleset',
-    charge: 'giliran Charge',
-    sprite: 'klik musuh gagal',
-    arrow: 'panah diklik ulang',
-    startFail: 'misi gagal dibuka',
-    unknownMs: 'menunggu layar asing (dtk)',
+    miss: 'missed attacks',
+    charge: 'Charge turns',
+    sprite: 'failed enemy clicks',
+    arrow: 'arrow re-presses',
+    startFail: 'missions failed to open',
+    unknownMs: 'waiting on unknown screen (s)',
   };
   const waste = (() => {
     const blank = () => Object.fromEntries(Object.keys(WASTE_LABELS).map((k) => [k, 0]));
@@ -1028,7 +1060,8 @@
     const foes = enemies(s);
     const target = foes[0];
     state.turns++;
-    setStatus(`Giliran ${state.turns} | HP ${Math.round(b.hp * 100)}% | Chakra ${Math.round(b.chakra * 100)}% | Musuh ${foes.length}`);
+    if (document.hidden) background.turns++;
+    setStatus(`Turn ${state.turns} | HP ${Math.round(b.hp * 100)}% | Chakra ${Math.round(b.chakra * 100)}% | Enemies ${foes.length}`);
 
     const heal = Number(config.healSlot) || 0;
     if (heal && b.hp < CFG.hpLow && slotReady(heal, s) && (await useSlot(heal, null, s))) return;
@@ -1122,9 +1155,9 @@
        */
       const closeX = first && findRedClose(first);
       if (closeX) {
-        setStatus('Menutup panel yang menutupi desa...');
+        setStatus('Closing the panel covering the village...');
         await click(closeX.x, closeX.y);
-      } else setStatus('Tulisan "Mission Room" tidak terlihat, tidak mengklik.');
+      } else setStatus('"Mission Room" label not visible, not clicking.');
       await sleep(800);
       return 'nolabel';
     }
@@ -1356,7 +1389,7 @@
     const first = await goToPage(grade, 1);
     state.scanLog = [];
     if (first !== 1) {
-      state.scanLog.push('hal1:tak-tercapai');
+      state.scanLog.push('page1:unreachable');
       return null;
     }
     let best = null;
@@ -1375,11 +1408,11 @@
       }
       if (stop) break;
       if (!missionListVisible(snap())) {
-        state.scanLog.push(`hal${page}:daftar-tak-terlihat`);
+        state.scanLog.push(`page${page}:list-not-visible`);
         break;
       }
       if (!(await pressPageArrow(POS.nextPage))) {
-        state.scanLog.push(`hal${page}:panah-tak-berubah`);
+        state.scanLog.push(`page${page}:arrow-unchanged`);
         break;
       }
       learnPage(grade, page + 1);
@@ -1390,7 +1423,7 @@
   async function navigateToMission(fromGradePanel = false) {
     if (needsPatch()) {
       if (!(await ensurePatched())) {
-        stopWith('Pola memori tidak ditemukan, bot dihentikan.');
+        stopWith('Memory pattern not found, bot stopped.');
         return;
       }
       state.patchedMemory = currentMemory();
@@ -1418,14 +1451,14 @@
       return waitForChange(before, region, max);
     };
 
-    setStatus(visualScan ? 'Mencari misi XP tertinggi...' : `Membuka misi Grade ${target.grade}, hal. ${target.page}, baris ${target.row}...`);
+    setStatus(visualScan ? 'Finding the highest-XP mission...' : `Opening mission Grade ${target.grade}, page ${target.page}, row ${target.row}...`);
     const opened = fromGradePanel || (await openGradePanel());
     if (opened === 'nolabel') {
       state.navigating = false;
       return;
     }
     if (!opened) {
-      setStatus('Panel Grade tidak terbuka, menutup dan mencoba lagi...');
+      setStatus('Grade panel did not open, closing and retrying...');
       const s = snap();
       const popupX = s && findRedClose(s);
       if (popupX) await click(popupX.x, popupX.y);
@@ -1443,7 +1476,7 @@
       let found = null;
       for (const grade of grades) {
         if (!state.running) break;
-        setStatus(`Mencari misi XP tertinggi di Grade ${grade}...`);
+        setStatus(`Finding the highest-XP mission in Grade ${grade}...`);
         /*
          * A grade above the character's level only shows a "not enough level" banner and the
          * mission list never opens, so an unchanged panel means skip to the next grade.
@@ -1452,7 +1485,7 @@
         await click(...GRADE_BUTTONS[grade]);
         const opened = await waitFor((s) => !isGradePanel(s), 3000);
         if (!opened) {
-          state.scanLog = (state.scanLog || []).concat(`${grade}:terkunci`);
+          state.scanLog = (state.scanLog || []).concat(`${grade}:locked`);
           continue;
         }
         const best = await scanBestMission(grade);
@@ -1470,7 +1503,7 @@
           if (at === refined.page) found = refined;
           else if (at === best.page) found = { grade, ...best };
           else if (at > refined.page && at < best.page) found = { grade, page: at, row: 3 };
-          else state.scanLog.push(`kembali-ke-hal${refined.page}:gagal`);
+          else state.scanLog.push(`back-to-page${refined.page}:failed`);
           break;
         }
         if (!missionListVisible(snap())) break;
@@ -1481,13 +1514,13 @@
       if (found) {
         storage.set(BEST_MISSION_KEY, JSON.stringify({ ...found, baseGrade: config.grade, slot: slotKey, level: Number(config.currentLevel || 0) }));
         syncConfigInputs();
-        setStatus(`Misi XP tertinggi: Grade ${found.grade}, hal. ${found.page}, baris ${found.row}`);
+        setStatus(`Highest-XP mission: Grade ${found.grade}, page ${found.page}, row ${found.row}`);
         await waitListSettled();
         if (state.running && missionListVisible(snap())) await clickAndWait([MISSION_ROW_X, MISSION_ROW_Y[found.row - 1]], MISSION_PANEL_REGION, 1500);
       } else {
         const manual = { grade: config.grade, page: config.page, row: config.row, baseGrade: config.grade, slot: slotKey, level: Number(config.currentLevel || 0) };
         storage.set(BEST_MISSION_KEY, JSON.stringify(manual));
-        setStatus(`Pindai tidak menemukan misi terbuka (${state.scanLog.join(' ')}), pakai pengaturan manual`);
+        setStatus(`Scan found no open mission (${state.scanLog.join(' ')}), using manual settings`);
         await sleep(1500);
       }
     } else {
@@ -1497,8 +1530,8 @@
       }
       const at = await goToPage(target.grade, Number(target.page) || 1);
       if (at !== Number(target.page)) {
-        state.scanLog = [`hal${at}/${target.page}:panah-tak-berubah`];
-        setStatus(`Hanya sampai hal. ${at} dari ${target.page}, baris tidak diklik`);
+        state.scanLog = [`page${at}/${target.page}:arrow-unchanged`];
+        setStatus(`Only reached page ${at} of ${target.page}, row not clicked`);
       } else if (state.running && missionListVisible(snap())) {
         await clickAndWait([MISSION_ROW_X, MISSION_ROW_Y[target.row - 1] || MISSION_ROW_Y[0]], MISSION_PANEL_REGION, 1500);
       }
@@ -1520,11 +1553,11 @@
       state.missions++;
       recordMissionStart();
       state.tableMiss = false;
-      setStatus(`Misi #${state.missions} dimulai`);
+      setStatus(`Mission #${state.missions} started`);
       await sleep(150);
     } else if (state.running) {
       wasted('startFail');
-      setStatus('Misi tidak bisa dimulai, menutup panel...');
+      setStatus('Mission could not start, closing panels...');
       for (let i = 0; i < 3; i++) {
         const s = snap();
         if (!s || findMissionRoomLabel(s)) break;
@@ -1598,7 +1631,7 @@
   }
 
   const UNKNOWN_KEY = 'nsBotUnknownScreens';
-  function captureUnknownScreen(note = 'layar tak dikenal') {
+  function captureUnknownScreen(note = 'unknown screen') {
     const st = stage();
     if (!st) return;
     const f = fit(st.canvas.width, st.canvas.height, st);
@@ -1620,12 +1653,12 @@
     captureUnknownScreen(`reload: ${reason}`);
     if (!config.autoRecover) {
       storage.set(AUTORUN_KEY, null);
-      stopWith(`${reason}. Pulih otomatis dimatikan, bot berhenti.`);
+      stopWith(`${reason}. Auto recovery is off, bot stopped.`);
       return;
     }
     storage.set(AUTORUN_KEY, '1');
     state.running = false;
-    setStatus(`${reason}, memuat ulang halaman...`);
+    setStatus(`${reason}, reloading the page...`);
     setTimeout(() => location.reload(), 800);
   }
 
@@ -1844,6 +1877,7 @@
     closeMissionSteps();
     applyMissionProfile();
     stats.missions++;
+    if (document.hidden) background.missions++;
     if (stats.missions > 1) closeWaste();
     turboMissionDone();
     stats.starts = stats.starts.concat(Date.now()).slice(-40);
@@ -2173,7 +2207,11 @@
     let n = mine.xpN || 0;
     const anchor = stats.xp;
     if (anchor && anchor.key === key && Number(config.currentLevel) === anchor.level) {
-      const live = stats.missions - anchor.missions;
+      /*
+       * The HUD is also read mid-mission; the mission under way has been counted at its start but
+       * has not paid out yet, so only finished missions are set against the XP gained.
+       */
+      const live = stats.missions - (state.inMission ? 1 : 0) - anchor.missions;
       const frac = latestXp();
       if (live > 0 && frac != null && frac >= anchor.frac) {
         const gain = (frac - anchor.frac) * xpNeed(anchor.level);
@@ -2231,15 +2269,15 @@
 
   const duration = (ms) => {
     const minutes = Math.round(ms / 60000);
-    if (minutes < 60) return `${minutes} mnt`;
-    return `${Math.floor(minutes / 60)} j ${minutes % 60} mnt`;
+    if (minutes < 60) return `${minutes} min`;
+    return `${Math.floor(minutes / 60)} h ${minutes % 60} min`;
   };
 
   function describeMission() {
     const m = currentTarget();
     const info = missionInfo(m);
-    if (info) return `${info.name} (Lv ${info.level}, ${info.xp.toLocaleString('id-ID')} XP)${info.exact ? '' : ' (perkiraan)'}`;
-    return `Grade ${m.grade} hal. ${m.page} baris ${m.row}`;
+    if (info) return `${info.name} (Lv ${info.level}, ${info.xp.toLocaleString('en-US')} XP)${info.exact ? '' : ' (estimate)'}`;
+    return `Grade ${m.grade} page ${m.page} row ${m.row}`;
   }
 
   /*
@@ -2314,47 +2352,49 @@
     el.hidden = !g;
     if (!g) return;
     const ago = g.readAt ? Math.round((Date.now() - g.readAt) / 60000) : null;
-    const xpText = g.xp != null ? `${g.xp.toLocaleString('id-ID')} / ${g.need.toLocaleString('id-ID')} XP (HUD)` : 'XP perkiraan bilah';
-    el.querySelector('.gl').textContent = `Lv ${g.from} \u2192 ${g.target} \u00b7 Lv ${g.current} \u00b7 ${xpText}${ago ? ` \u00b7 ${ago} mnt lalu` : ''}`;
+    const xpText = g.xp != null ? `${g.xp.toLocaleString('en-US')} / ${g.need.toLocaleString('en-US')} XP (HUD)` : 'XP estimated from bar';
+    el.querySelector('.gl').textContent = `Lv ${g.from} \u2192 ${g.target} \u00b7 Lv ${g.current} \u00b7 ${xpText}${ago ? ` \u00b7 ${ago} min ago` : ''}`;
     el.querySelector('.gp').textContent = `${(g.pct * 100).toFixed(2)}%${g.lastPct ? ` (+${(g.lastPct * 100).toFixed(2)}%)` : ''}`;
     el.querySelector('.gf').style.width = `${g.pct * 100}%`;
     el.querySelector('.lf').style.width = `${g.level * 100}%`;
     el.querySelector('.gr').textContent =
-      g.left == null ? 'Sisa misi diukur setelah 1 misi selesai' : `Ke target ~${g.left} misi${g.eta ? ` \u00b7 ~${duration(g.eta)}` : ''}${g.levelLeft != null ? ` \u00b7 naik level ~${g.levelLeft} misi` : ''}`;
-    el.querySelector('.ll').textContent = `Lv ${g.current} \u2192 ${g.current + 1}: ${(g.level * 100).toFixed(1)}%${g.lastGain ? ` \u00b7 +${Math.round(g.lastGain).toLocaleString('id-ID')} XP` : ''}`;
+      g.left == null ? 'Missions left are measured after 1 finished mission' : `To target ~${g.left} missions${g.eta ? ` \u00b7 ~${duration(g.eta)}` : ''}${g.levelLeft != null ? ` \u00b7 level up ~${g.levelLeft} missions` : ''}`;
+    el.querySelector('.ll').textContent = `Lv ${g.current} \u2192 ${g.current + 1}: ${(g.level * 100).toFixed(1)}%${g.lastGain ? ` \u00b7 +${Math.round(g.lastGain).toLocaleString('en-US')} XP` : ''}`;
   }
 
   function statsRows() {
-    if (config.mode === 'cheat') return [['note', 'Mode cheat saja: bot tidak bermain.']];
+    if (config.mode === 'cheat') return [['note', 'Cheat-only mode: the bot does not play.']];
     const current = Number(config.currentLevel) || 0;
     const target = targetLevel();
     const each = missionMs();
     const perLevel = missionsPerLevel();
     const rows = [
-      ['Misi', describeMission()],
+      ['Mission', describeMission()],
       ['Level', `${current || '?'} \u2192 target ${target || '-'}`],
-      ['Dijalankan', `${stats.missions} misi \u00b7 ${duration(Date.now() - stats.since)}`],
+      ['Run', `${stats.missions} missions \u00b7 ${duration(Date.now() - stats.since)}`],
     ];
     const speeds = Object.entries(missionGapsBySpeed()).sort((a, b) => a[0] - b[0]);
     rows.push([
-      `Durasi/misi (${currentSpeed()}x aktif)`,
-      speeds.length ? speeds.map(([x, v]) => `${x}x ${(v.ms / 60000).toFixed(1)} mnt`).join(' \u00b7 ') : 'diukur setelah 2 misi',
+      `Time/mission (${currentSpeed()}x active)`,
+      speeds.length ? speeds.map(([x, v]) => `${x}x ${(v.ms / 60000).toFixed(1)} min`).join(' \u00b7 ') : 'measured after 2 missions',
     ]);
     if (waste.missions) {
       const avg = Object.keys(WASTE_LABELS)
         .map((k) => [k, waste.total[k] / waste.missions])
         .filter(([, v]) => v >= 0.05)
         .map(([k, v]) => `${WASTE_LABELS[k]} ${v.toFixed(1)}`);
-      rows.push(['Pemborosan/misi', avg.length ? avg.join(' \u00b7 ') : 'tidak ada']);
+      rows.push(['Waste/mission', avg.length ? avg.join(' \u00b7 ') : 'none']);
     }
+    const bg = backgroundSummary();
+    if (bg.hiddenMin > 0) rows.push(['In background', `${bg.hiddenMin} min \u00b7 ${bg.missions} missions \u00b7 ${bg.turns} turns \u00b7 longest gap ${bg.longestGapS} s`]);
     if (config.turbo) {
       const fails = Object.entries(turbo.failsAt.battle).concat(Object.entries(turbo.failsAt.other)).reduce((n, [, v]) => n + v, 0);
-      rows.push(['Turbo', `battle ${turbo.speed.battle}x \u00b7 lainnya ${turbo.speed.other}x${fails ? ` \u00b7 ${fails} error` : ''}`]);
+      rows.push(['Turbo', `battle ${turbo.speed.battle}x \u00b7 other ${turbo.speed.other}x${fails ? ` \u00b7 ${fails} error` : ''}`]);
     }
     const info = missionInfo();
     const measured = xpPerMission();
     const perMission = measured || (info ? info.xp : 0);
-    if (!current || !target) rows.push(['note', 'Isi "Level saat ini" untuk perkiraan.']);
+    if (!current || !target) rows.push(['note', 'Fill in "Current level" for estimates.']);
     else if (perMission && stats.xp && stats.xp.level === current) {
       const frac = latestXp() ?? stats.xp.frac;
       let need = -frac * xpNeed(current);
@@ -2369,17 +2409,17 @@
       const levelTotal = Math.ceil(levelXp / perMission);
       const levelDone = Math.min(levelTotal, Math.floor((frac * levelXp) / perMission));
       const levelLeft = Math.max(0, Math.ceil(((1 - frac) * levelXp) / perMission));
-      rows.push([measured ? 'XP/misi (terukur)' : 'XP/misi (dasar)', Math.round(perMission).toLocaleString('id-ID')]);
-      rows.push([`Ke Lv ${current + 1}`, `${levelDone}/${levelTotal} misi \u00b7 sisa ${levelLeft}${each ? ` \u00b7 ~${duration(levelLeft * each)}` : ''}`]);
-      rows.push([`Ke Lv ${target}`, `~${left} misi${each ? ` \u00b7 ~${duration(left * each)}` : ''}`]);
-      rows.push(['Kurang XP', Math.round(need).toLocaleString('id-ID')]);
-      if (!each) rows.push(['note', 'Waktu muncul setelah 2 misi di kecepatan ini.']);
-    } else if (!perLevel) rows.push(['note', 'Mengukur XP per misi (perlu 1 misi selesai)...']);
+      rows.push([measured ? 'XP/mission (measured)' : 'XP/mission (base)', Math.round(perMission).toLocaleString('en-US')]);
+      rows.push([`To Lv ${current + 1}`, `${levelDone}/${levelTotal} missions \u00b7 ${levelLeft} left${each ? ` \u00b7 ~${duration(levelLeft * each)}` : ''}`]);
+      rows.push([`To Lv ${target}`, `~${left} missions${each ? ` \u00b7 ~${duration(left * each)}` : ''}`]);
+      rows.push(['XP needed', Math.round(need).toLocaleString('en-US')]);
+      if (!each) rows.push(['note', 'Time shows after 2 missions at this speed.']);
+    } else if (!perLevel) rows.push(['note', 'Measuring XP per mission (needs 1 finished mission)...']);
     else {
       const sinceLast = stats.missions - stats.levelMarks[stats.levelMarks.length - 1];
       const left = Math.max(0, Math.round((target - current) * perLevel - sinceLast));
-      rows.push(['Misi/level', `~${perLevel.toFixed(1)}`]);
-      rows.push([`Ke Lv ${target}`, `~${left} misi${each ? ` \u00b7 ~${duration(left * each)}` : ''}`]);
+      rows.push(['Missions/level', `~${perLevel.toFixed(1)}`]);
+      rows.push([`To Lv ${target}`, `~${left} missions${each ? ` \u00b7 ~${duration(left * each)}` : ''}`]);
     }
     return rows;
   }
@@ -2433,16 +2473,16 @@
         const r = patchMemory();
         if (r.patched + r.already > 0) {
           state.patchedMemory = memory;
-          state.lastPatch = `${r.patched} diubah, ${r.already} sudah`;
+          state.lastPatch = `${r.patched} patched, ${r.already} already`;
         }
       }
       if (config.lockChakra) lockChakra();
-      const jutsu = !config.patchMemory ? 'mati' : memory ? state.jutsuPatch || 'menunggu' : 'menunggu karakter dipilih';
-      const attack = !config.attackCheat ? 'mati' : memory ? state.attackPatch || 'menunggu' : 'menunggu karakter dipilih';
-      setStatus(`Cheat saja | Jurus: ${jutsu} | Serangan biasa: ${attack} | Chakra: ${config.lockChakra ? 'terkunci' : 'mati'}`);
+      const jutsu = !config.patchMemory ? 'off' : memory ? state.jutsuPatch || 'waiting' : 'waiting for character';
+      const attack = !config.attackCheat ? 'off' : memory ? state.attackPatch || 'waiting' : 'waiting for character';
+      setStatus(`Cheat only | Jutsu: ${jutsu} | Basic attack: ${attack} | Chakra: ${config.lockChakra ? 'locked' : 'off'}`);
       await sleep(400);
     }
-    setStatus('Berhenti');
+    setStatus('Stopped');
   }
 
   async function loop() {
@@ -2469,15 +2509,16 @@
        * spinning on microtasks, which starves the renderer and freezes the tab.
        */
       await sleep(40);
+      noteLoop();
 
       if (rufflePanicked() || Date.now() - state.lastProgress > CFG.stallReloadMs) {
-        recover(rufflePanicked() ? 'Ruffle error' : 'Game macet');
+        recover(rufflePanicked() ? 'Ruffle error' : 'Game stalled');
         return;
       }
 
       const s = snap();
       if (!s) {
-        setStatus('Game belum termuat...');
+        setStatus('Game not loaded yet...');
         await sleep(1000);
         continue;
       }
@@ -2514,15 +2555,15 @@
         }
         const closeX = check ? null : findRedClose(s);
         if (check) {
-          setStatus('Klik checkmark (level up / hasil)...');
+          setStatus('Clicking checkmark (level up / result)...');
           await click(check.x, check.y);
           await waitFor((n) => !isDialog(n), 400, 40);
         } else if (closeX) {
-          setStatus('Menutup popup tutorial...');
+          setStatus('Closing tutorial popup...');
           await click(closeX.x, closeX.y);
           await waitFor((n) => !findRedClose(n), 400, 40);
         } else {
-          setStatus('Melewati dialog...');
+          setStatus('Skipping dialog...');
           await click(...POS.dialog);
         }
         state.usedThisBattle.clear();
@@ -2541,7 +2582,7 @@
        * findGreenCheck, so it must be recognised first or the bot would start a new character.
        */
       if (isCharacterSelect(s)) {
-        setStatus('Memilih karakter...');
+        setStatus('Selecting character...');
         await click(...(CHARACTER_SLOTS[(Number(config.characterSlot) || 1) - 1] || CHARACTER_SLOTS[0]));
         await sleep(800);
         await click(...POS.characterPlay);
@@ -2552,7 +2593,7 @@
 
       const g = findGreenCheck(s);
       if (g) {
-        setStatus('Klik checkmark...');
+        setStatus('Clicking checkmark...');
         await click(g.x, g.y);
         state.usedThisBattle.clear();
         progressed();
@@ -2569,7 +2610,7 @@
         if (storage.get('nsReloadAtVillage') === '1') {
           storage.set('nsReloadAtVillage', null);
           storage.set(AUTORUN_KEY, '1');
-          setStatus('Di desa: reload untuk menerapkan pembaruan...');
+          setStatus('In village: reloading to apply updates...');
           state.running = false;
           markCleanReload();
           setTimeout(() => location.reload(), 300);
@@ -2580,13 +2621,13 @@
           storage.set('nsStopAtVillage', null);
           storage.set(AUTORUN_KEY, null);
           const isExam = stopLevelList().includes(Number(examLevel));
-          stopWith(`Level ${examLevel} tercapai${isExam ? ': waktunya ujian rank' : ' (target)'}. Bot berhenti.`);
+          stopWith(`Level ${examLevel} reached${isExam ? ': time for the rank exam' : ' (target)'}. Bot stopped.`);
           return;
         }
         if (storage.get('nsPauseAtVillage') === '1') {
           storage.set('nsPauseAtVillage', null);
           storage.set(AUTORUN_KEY, null);
-          stopWith('Dijeda di desa');
+          stopWith('Paused in village');
           return;
         }
         recordXp(s);
@@ -2612,14 +2653,14 @@
        */
       if (onMapScreen && (state.inMission || Date.now() - idleSince > 1500)) state.mapSeenAt = Date.now();
       if (!onMapScreen && Date.now() - (state.mapSeenAt || 0) < 15000) {
-        setStatus('Transisi / pertarungan, menunggu...');
+        setStatus('Transition / battle, waiting...');
         await sleep(80);
         continue;
       }
       if (Date.now() - (state.mapSeenAt || 0) < 15000) {
         const enemy = untriedSprites(s)[0];
         if (enemy) {
-          setStatus('Peta misi: mengklik musuh...');
+          setStatus('Mission map: clicking enemy...');
           state.lastAim = { at: Date.now(), kind: 'map', enemy };
           await clickSprite(enemy);
           continue;
@@ -2635,7 +2676,7 @@
         }
         if (arrow && Date.now() >= (state.walkingUntil || 0)) {
           state.mapTried = [];
-          setStatus(goRight ? 'Peta misi: maju (Go!)...' : 'Peta misi: pindah area (Go! kiri)...');
+          setStatus(goRight ? 'Mission map: moving on (Go!)...' : 'Mission map: changing area (Go! left)...');
           await click(arrow.x, arrow.y);
           state.walkingUntil = Date.now() + 1200;
           await sleep(250);
@@ -2646,13 +2687,13 @@
          * enemy in sight for a while, walking far right scrolls the camera to reveal one of them.
          */
         if (Date.now() >= (state.walkingUntil || 0) + 800) {
-          setStatus('Peta misi: berjalan ke kanan...');
+          setStatus('Mission map: walking right...');
           await click(900, 430);
           state.walkingUntil = Date.now() + 2500;
           await sleep(250);
           continue;
         }
-        setStatus('Peta misi: berjalan, mencari musuh...');
+        setStatus('Mission map: walking, looking for enemies...');
         await sleep(120);
         continue;
       }
@@ -2660,13 +2701,13 @@
       if (Date.now() - idleSince > CFG.idleBeforeClick) {
         const strayPanelX = findRedClose(s);
         if (strayPanelX) {
-          setStatus('Menutup panel...');
+          setStatus('Closing panel...');
           await click(strayPanelX.x, strayPanelX.y);
           await sleep(400);
           progressed();
           continue;
         }
-        setStatus('Mencari musuh di cutscene...');
+        setStatus('Looking for enemies in cutscene...');
         if (Date.now() - idleSince > 3000 && !state.capturedThisIdle) {
           state.capturedThisIdle = true;
           captureUnknownScreen();
@@ -2679,7 +2720,7 @@
           const aim = untriedSprites(s)[0];
           state.spriteTries = aim ? (state.spriteTries || 0) + 1 : 3;
           if (aim) {
-            setStatus('Mengklik musuh...');
+            setStatus('Clicking enemy...');
             state.lastAim = { at: Date.now(), kind: 'idle', enemy: aim };
             await clickSprite(aim);
             continue;
@@ -2690,16 +2731,16 @@
          * panels. With no enemy to aim at the bot only waits; a screen that never changes is
          * handled by the stall recovery (reload) instead.
          */
-        setStatus('Layar tidak dikenal, menunggu (tanpa klik)...');
+        setStatus('Unknown screen, waiting (no clicks)...');
         await sleep(300);
         wasted('unknownMs', 0.3);
         continue;
       }
 
-      setStatus('Menunggu...');
+      setStatus('Waiting...');
       await sleep(150);
     }
-    setStatus('Berhenti');
+    setStatus('Stopped');
   }
 
   const host = document.createElement('div');
@@ -2764,9 +2805,9 @@
       .goal .sub{color:#8e8e93;font-size:11px;font-variant-numeric:tabular-nums}
     </style>
     <div class="p" id="p">
-      <div class="hd"><span class="dot" id="dot"></span><span class="t">Ninja Saga Bot</span><button class="ic" id="mn" title="Perkecil / perbesar panel">\u2212</button></div>
+      <div class="hd"><span class="dot" id="dot"></span><span class="t">Ninja Saga Bot</span><button class="ic" id="mn" title="Collapse / expand panel">\u2212</button></div>
       <div class="s" id="s">Idle</div>
-      <div class="c" id="c">Misi: 0 | Giliran: 0</div>
+      <div class="c" id="c">Missions: 0 | Turns: 0</div>
       <div class="goal" id="goal" hidden>
         <div class="top"><span class="gl"></span><span class="gp"></span></div>
         <div class="bar"><div class="gf"></div></div>
@@ -2778,70 +2819,70 @@
       </div>
       <div class="body" id="cfg">
         <details class="sec" data-sec="progress" open>
-          <summary>Progres</summary>
+          <summary>Progress</summary>
           <div class="in"><div class="grid" id="st"></div></div>
         </details>
         <details class="sec" data-sec="steps" open>
-          <summary>Langkah</summary>
+          <summary>Steps</summary>
           <div class="in">
             <div class="grid" id="steps"></div>
           </div>
         </details>
         <details class="sec" data-sec="char">
-          <summary>Karakter &amp; level</summary>
+          <summary>Character &amp; level</summary>
           <div class="in">
-            <div class="row">Slot karakter (1-6)<input type="number" min="1" max="6" data-k="characterSlot"></div>
-            <div class="row">Level saat ini<input type="number" min="0" max="100" data-k="currentLevel"></div>
-            <div class="row">Target level (0 = otomatis)<input type="number" min="0" max="100" data-k="targetLevel"></div>
-            <div class="row">Berhenti di level<input type="text" data-k="stopLevels"></div>
-            <div class="hint">Level naik otomatis tiap Level Up. Bot berhenti di desa saat target atau level ujian tercapai. Target 0 = level ujian berikutnya.</div>
+            <div class="row">Character slot (1-6)<input type="number" min="1" max="6" data-k="characterSlot"></div>
+            <div class="row">Current level<input type="number" min="0" max="100" data-k="currentLevel"></div>
+            <div class="row">Target level (0 = auto)<input type="number" min="0" max="100" data-k="targetLevel"></div>
+            <div class="row">Stop at levels<input type="text" data-k="stopLevels"></div>
+            <div class="hint">The level updates automatically on every Level Up and from the HUD. The bot stops in the village when the target or an exam level is reached. Target 0 = next exam level.</div>
           </div>
         </details>
         <details class="sec" data-sec="mission">
-          <summary>Misi</summary>
+          <summary>Missions</summary>
           <div class="in">
-            <div class="row">Auto misi XP tertinggi<input type="checkbox" data-k="autoBestXp"></div>
+            <div class="row">Auto highest-XP mission<input type="checkbox" data-k="autoBestXp"></div>
             <div class="hint" id="autoinfo"></div>
             <div class="row">Grade<select data-k="grade"><option>A</option><option>B</option><option>C</option></select></div>
-            <div class="row">Halaman<input type="number" min="1" max="20" data-k="page"></div>
-            <div class="row">Baris<select data-k="row"><option value="1">1</option><option value="2">2</option><option value="3">3</option></select></div>
+            <div class="row">Page<input type="number" min="1" max="20" data-k="page"></div>
+            <div class="row">Row<select data-k="row"><option value="1">1</option><option value="2">2</option><option value="3">3</option></select></div>
           </div>
         </details>
         <details class="sec" data-sec="battle">
-          <summary>Pertarungan</summary>
+          <summary>Battle</summary>
           <div class="in">
-            <div class="row">Gaya serangan<select class="w" data-k="attackStyle"><option value="basic">Basic attack</option><option value="jutsu">Jurus</option></select></div>
-            <div class="row">Urutan slot jurus<input type="text" data-k="slotOrder"></div>
-            <div class="row">Slot heal (0 = tidak ada)<input type="number" min="0" max="8" data-k="healSlot"></div>
-            <div class="hint">Slot 1-4 kiri, 5-8 kanan tombol Attack. Disimpan per misi.</div>
+            <div class="row">Attack style<select class="w" data-k="attackStyle"><option value="basic">Basic attack</option><option value="jutsu">Jutsu</option></select></div>
+            <div class="row">Jutsu slot order<input type="text" data-k="slotOrder"></div>
+            <div class="row">Heal slot (0 = none)<input type="number" min="0" max="8" data-k="healSlot"></div>
+            <div class="hint">Slots 1-4 left, 5-8 right of the Attack button. Saved per mission.</div>
           </div>
         </details>
         <details class="sec" data-sec="cheat">
           <summary>Cheat</summary>
           <div class="in">
-            <div class="row">Mode<select class="w" data-k="mode"><option value="auto">Bot otomatis</option><option value="cheat">Cheat saja</option></select></div>
-            <div class="hint">Cheat saja: kamu bermain sendiri, bot hanya memasang cheat yang dicentang.</div>
-            <div class="row">Damage jurus (AOB)<input type="checkbox" data-k="patchMemory"></div>
-            <div class="row">Serangan biasa 400000<input type="checkbox" data-k="attackCheat"></div>
-            <div class="row">Kunci chakra<input type="checkbox" data-k="lockChakra"></div>
-            <div class="hint">Patch berlaku untuk battle setelah halaman dimuat ulang.</div>
+            <div class="row">Mode<select class="w" data-k="mode"><option value="auto">Auto bot</option><option value="cheat">Cheat only</option></select></div>
+            <div class="hint">Cheat only: you play yourself; the bot only applies the ticked cheats.</div>
+            <div class="row">Jutsu damage (AOB)<input type="checkbox" data-k="patchMemory"></div>
+            <div class="row">Basic attack 400000<input type="checkbox" data-k="attackCheat"></div>
+            <div class="row">Lock chakra<input type="checkbox" data-k="lockChakra"></div>
+            <div class="hint">A patch that is switched off stays in memory until the page is reloaded.</div>
           </div>
         </details>
         <details class="sec" data-sec="misc">
-          <summary>Lainnya</summary>
+          <summary>Other</summary>
           <div class="in">
-            <div class="row">Suara game<input type="checkbox" id="snd"></div>
-            <div class="row">Pulih otomatis (reload)<input type="checkbox" data-k="autoRecover"></div>
-            <div class="row">Turbo stabil (speed otomatis)<input type="checkbox" data-k="turbo"></div>
-            <div class="hint">Battle memakai speed tertinggi yang aman, lainnya satu tingkat di bawah; turun sendiri bila muncul error, naik lagi setelah 25 misi bersih.</div>
-            <div class="row">Battle ekstrem (hingga 8x)<input type="checkbox" data-k="battleBoost"></div>
-            <div class="hint">Eksperimen: battle naik 1 tingkat tiap 5 misi bersih sampai 8x, turun sendiri bila error. Butuh Turbo aktif; pertama kali, halaman di-reload saat di desa.</div>
+            <div class="row">Game sound<input type="checkbox" id="snd"></div>
+            <div class="row">Auto recovery (reload)<input type="checkbox" data-k="autoRecover"></div>
+            <div class="row">Stable turbo (auto speed)<input type="checkbox" data-k="turbo"></div>
+            <div class="hint">Battles use the highest safe speed, everything else one step lower; drops by itself on an error and climbs again after 25 clean missions.</div>
+            <div class="row">Extreme battle (up to 8x)<input type="checkbox" data-k="battleBoost"></div>
+            <div class="hint">Experimental: battles climb one step every 5 clean missions up to 8x and drop on an error. Needs Turbo; the first time, the page reloads in the village.</div>
             <div class="row"><button class="link" id="tr">Reset turbo</button></div>
-            <div class="row"><button class="link" id="rs">Reset hitungan misi</button></div>
+            <div class="row"><button class="link" id="rs">Reset mission stats</button></div>
           </div>
         </details>
       </div>
-      <div class="ft"><button id="b">Start</button><button class="rep" id="slow" title="Simpan langkah & layar saat ini untuk dianalisis">Laporkan lambat</button></div>
+      <div class="ft"><button id="b">Start</button><button class="rep" id="slow" title="Save the current step and screen for analysis">Report slow</button></div>
       <div class="kbd foot" id="slowok">Alt+S: Start/Stop</div>
     </div>`;
   document.body.appendChild(host);
@@ -2857,7 +2898,7 @@
   root.getElementById('slow').addEventListener('click', () => {
     reportSlow();
     const note = root.getElementById('slowok');
-    note.textContent = `Laporan tersimpan (${steps.name}). Beri tahu Claude untuk menganalisis.`;
+    note.textContent = `Report saved (${steps.name}). Ask for it to be analysed.`;
     setTimeout(() => {
       note.textContent = 'Alt+S: Start/Stop';
     }, 4000);
@@ -2921,7 +2962,7 @@
       const key = el.dataset.k;
       const auto = config.autoBestXp && AUTO_FIELDS.includes(key);
       el.disabled = auto;
-      el.title = auto ? 'Diatur otomatis oleh "Auto misi XP tertinggi"' : '';
+      el.title = auto ? 'Set automatically by "Auto highest-XP mission"' : '';
       if (el.type === 'checkbox') el.checked = !!config[key];
       else if (document.activeElement !== host) el.value = String(auto && best ? best[key] : config[key]);
     });
@@ -2929,8 +2970,8 @@
     if ($auto) {
       const info = missionInfo();
       $auto.textContent = config.autoBestXp
-        ? `Otomatis: ${info ? `${info.name} (Lv ${info.level}, ${info.xp.toLocaleString('id-ID')} XP)` : 'menunggu pindaian'}${best ? ` \u2014 Grade ${best.grade}, hal. ${best.page}, baris ${best.row}` : ''}`
-        : 'Manual: bot memakai Grade, Halaman dan Baris di bawah.';
+        ? `Auto: ${info ? `${info.name} (Lv ${info.level}, ${info.xp.toLocaleString('en-US')} XP)` : 'waiting for scan'}${best ? ` \u2014 Grade ${best.grade}, page ${best.page}, row ${best.row}` : ''}`
+        : 'Manual: the bot uses the Grade, Page and Row below.';
     }
   }
 
@@ -3059,7 +3100,7 @@
       if (next <= capOf(phase) && turbo.clean[phase] >= probeAfter(phase) && (turbo.failsAt[phase][next] || 0) < 2) {
         turbo.speed[phase] = next;
         turbo.clean[phase] = 0;
-        turbo.log = turbo.log.concat(`${new Date().toISOString().slice(5, 16)} ${phase} naik ke ${next}x`).slice(-10);
+        turbo.log = turbo.log.concat(`${new Date().toISOString().slice(5, 16)} ${phase} up to ${next}x`).slice(-10);
       }
     }
     saveTurbo();
@@ -3075,7 +3116,7 @@
       turbo.failsAt[phase][was] = (turbo.failsAt[phase][was] || 0) + 1;
       turbo.speed[phase] = Math.max(TURBO_MIN, was - 1);
       turbo.clean[phase] = 0;
-      turbo.log = turbo.log.concat(`${new Date().toISOString().slice(5, 16)} error saat ${phase} ${was}x, turun ke ${turbo.speed[phase]}x`).slice(-10);
+      turbo.log = turbo.log.concat(`${new Date().toISOString().slice(5, 16)} error during ${phase} ${was}x, down to ${turbo.speed[phase]}x`).slice(-10);
       saveTurbo();
     }
   }
@@ -3087,14 +3128,14 @@
    * screenshot for later analysis.
    */
   const STEPS = [
-    ['Pertarungan', /Giliran/],
-    ['Peta: Go!', /Go!|pindah area/],
-    ['Peta: cari musuh', /mengklik musuh|Mengklik musuh|berjalan|Transisi/],
-    ['Navigasi misi', /Mission Room|Grade|misi XP|Membuka misi|Misi #|panel|Patch/],
+    ['Battle', /^Turn /],
+    ['Map: Go!', /Go!|changing area/],
+    ['Map: find enemy', /clicking enemy|Clicking enemy|walking|Transition/],
+    ['Mission navigation', /Mission Room|Grade|highest-XP|Opening mission|Mission #|panel|patch/],
     ['Dialog / hasil', /dialog|checkmark|Level|tutorial/],
   ];
-  const stepOf = (text) => (STEPS.find(([, re]) => re.test(text)) || ['Lainnya'])[0];
-  const steps = { name: 'Lainnya', since: Date.now(), mission: {}, last: null };
+  const stepOf = (text) => (STEPS.find(([, re]) => re.test(text)) || ['Other'])[0];
+  const steps = { name: 'Other', since: Date.now(), mission: {}, last: null };
 
   function trackStep(text) {
     const name = stepOf(text);
@@ -3127,19 +3168,19 @@
     };
     if (state.running) {
       const cur = (Date.now() - steps.since) / 1000;
-      row('Sekarang', `${steps.name} \u00b7 ${cur.toFixed(1)} dtk`, cur > 10);
-    } else row('Sekarang', 'bot berhenti', false);
+      row('Now', `${steps.name} \u00b7 ${cur.toFixed(1)} s`, cur > 10);
+    } else row('Now', 'bot stopped', false);
     if (!steps.last) {
       const n = document.createElement('div');
       n.className = 'note';
-      n.textContent = 'Rincian per langkah muncul setelah misi berikutnya dimulai.';
+      n.textContent = 'Per-step details appear once the next mission starts.';
       el.appendChild(n);
       return;
     }
     const total = Object.values(steps.last).reduce((t, v) => t + v, 0) || 1;
     for (const [k, v] of Object.entries(steps.last).sort((a, b) => b[1] - a[1])) {
       const share = v / total;
-      row(k, `${(v / 1000).toFixed(1)} dtk \u00b7 ${Math.round(share * 100)}%`, k.startsWith('Peta') && share > 0.35);
+      row(k, `${(v / 1000).toFixed(1)} s \u00b7 ${Math.round(share * 100)}%`, k.startsWith('Map') && share > 0.35);
     }
   }
 
@@ -3168,8 +3209,8 @@
     trackStep(text);
     state.status = text;
     $s.textContent = text;
-    const lock = chakra.at >= 0 ? ` | Chakra terkunci ${chakra.lockValue}` : '';
-    $c.textContent = `Misi: ${state.missions} | Giliran: ${state.turns}${lock}`;
+    const lock = chakra.at >= 0 ? ` | Chakra locked ${chakra.lockValue}` : '';
+    $c.textContent = `Missions: ${state.missions} | Turns: ${state.turns}${lock}`;
     renderStats($st);
     renderGoal($goal);
     renderSteps($steps);
@@ -3206,9 +3247,9 @@
        * from the moment the bot is started.
        */
       steps.mission = {};
-      steps.name = 'Lainnya';
+      steps.name = 'Other';
       steps.since = Date.now();
-      setStatus('Mulai...');
+      setStatus('Starting...');
       loop();
     }
   }
@@ -3272,6 +3313,49 @@
   };
   syncVisibility();
   const visibilityTimer = setInterval(syncVisibility, 1000);
+
+  /*
+   * Telemetry for watching the bot from outside the browser: every 5 s the report (and every 20 s
+   * a small screenshot) goes through poller.js and the extension background to the local dev
+   * server, which writes it to .status/ in the extension folder. Nothing is read back.
+   */
+  const browserName = (() => {
+    const brands = (navigator.userAgentData && navigator.userAgentData.brands) || [];
+    return navigator.brave ? 'Brave' : (brands.find((b) => /Chrome|Edge|Opera/.test(b.brand)) || { brand: 'Chromium' }).brand;
+  })();
+  let telemetryTick = 0;
+  function screenThumb() {
+    const st = stage();
+    if (!st) return null;
+    const f = fit(st.canvas.width, st.canvas.height, st);
+    const c = document.createElement('canvas');
+    c.width = 480;
+    c.height = 360;
+    c.getContext('2d').drawImage(st.canvas, f.ox, f.oy, st.swfW * f.k, st.swfH * f.k, 0, 0, 480, 360);
+    return c.toDataURL('image/jpeg', 0.7);
+  }
+  let telemetryOn = true;
+  async function telemetryLoop() {
+    while (telemetryOn) {
+      sendTelemetry();
+      await sleep(5000);
+    }
+  }
+  function sendTelemetry() {
+    let report = null;
+    try {
+      report = JSON.parse(window.__nsBot.report());
+    } catch (e) {
+      report = null;
+    }
+    const image = telemetryTick++ % 4 === 0 ? screenThumb() : null;
+    window.postMessage({
+      source: 'nsBot',
+      type: 'telemetry',
+      data: { at: new Date().toISOString(), browser: browserName, hidden: document.hidden, running: state.running, status: state.status, missions: state.missions, turns: state.turns, report, image },
+    }, '*');
+  }
+  telemetryLoop();
   const hudTimer = setInterval(() => {
     if (state.navigating) return;
     const hud = readHudXp();
@@ -3287,7 +3371,7 @@
    */
   let resumeTimer = null;
   if (storage.get(AUTORUN_KEY) === '1') {
-    setStatus('Menunggu game termuat untuk melanjutkan...');
+    setStatus('Waiting for the game to load to resume...');
     resumeTimer = setInterval(() => {
       if (state.running || !stage()) return;
       clearInterval(resumeTimer);
@@ -3326,6 +3410,13 @@
         missionGaps: missionGapsBySpeed(),
         wastePerMission: Object.fromEntries(Object.keys(WASTE_LABELS).map((k) => [k, per(k)])),
         wasteMissions: waste.missions,
+        background: backgroundSummary(),
+        hud: (() => {
+          const st = stage();
+          const img = hudImage();
+          const read = img ? hudText(img) : null;
+          return { canvas: st ? [st.canvas.width, st.canvas.height] : null, dpr: window.devicePixelRatio, img: img ? [img.w, img.h] : null, text: read && read.text, worst: read && Number.isFinite(read.worst) ? +read.worst.toFixed(3) : read && 'ambiguous', parsed: read ? parseHudXp(read) : null };
+        })(),
         xpNow: stats.xpNow,
         xpPrev: stats.xpPrev,
         goal: stats.goal,
@@ -3358,6 +3449,7 @@
       state.running = false;
       clearInterval(visibilityTimer);
       clearInterval(hudTimer);
+      telemetryOn = false;
       clearInterval(playGuardTimer);
       clearInterval(stepTimer);
       if (resumeTimer) clearInterval(resumeTimer);
