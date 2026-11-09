@@ -895,12 +895,12 @@
    */
   const WASTE_KEY = 'nsBotWaste';
   const WASTE_LABELS = {
-    miss: 'missed attacks',
-    charge: 'Charge turns',
-    sprite: 'failed enemy clicks',
-    arrow: 'arrow re-presses',
-    startFail: 'missions failed to open',
-    unknownMs: 'waiting on unknown screen (s)',
+    miss: 'missed hits',
+    charge: 'Charge',
+    sprite: 'enemy clicks',
+    arrow: 'arrow retries',
+    startFail: 'open fails',
+    unknownMs: 'unknown screen s',
   };
   const waste = (() => {
     const blank = () => Object.fromEntries(Object.keys(WASTE_LABELS).map((k) => [k, 0]));
@@ -1651,6 +1651,11 @@
 
   function recover(reason) {
     captureUnknownScreen(`reload: ${reason}`);
+    /*
+     * A stall reload is the bot giving up on a screen, not the game failing at speed, so Turbo
+     * does not count it against the phase that was active.
+     */
+    markCleanReload();
     if (!config.autoRecover) {
       storage.set(AUTORUN_KEY, null);
       stopWith(`${reason}. Auto recovery is off, bot stopped.`);
@@ -2352,14 +2357,27 @@
     el.hidden = !g;
     if (!g) return;
     const ago = g.readAt ? Math.round((Date.now() - g.readAt) / 60000) : null;
-    const xpText = g.xp != null ? `${g.xp.toLocaleString('en-US')} / ${g.need.toLocaleString('en-US')} XP (HUD)` : 'XP estimated from bar';
-    el.querySelector('.gl').textContent = `Lv ${g.from} \u2192 ${g.target} \u00b7 Lv ${g.current} \u00b7 ${xpText}${ago ? ` \u00b7 ${ago} min ago` : ''}`;
-    el.querySelector('.gp').textContent = `${(g.pct * 100).toFixed(2)}%${g.lastPct ? ` (+${(g.lastPct * 100).toFixed(2)}%)` : ''}`;
+    const fmt = (n) => Math.round(n).toLocaleString('en-US');
+    el.querySelector('.gl').textContent = `Lv ${g.current} \u2192 ${g.target}`;
+    el.querySelector('.gl').title = `Target set at Lv ${g.from}`;
+    const gp = el.querySelector('.gp');
+    gp.textContent = `${(g.pct * 100).toFixed(1)}%`;
+    if (g.lastPct) {
+      const d = document.createElement('small');
+      d.textContent = `+${(g.lastPct * 100).toFixed(2)}%`;
+      gp.appendChild(d);
+    }
     el.querySelector('.gf').style.width = `${g.pct * 100}%`;
     el.querySelector('.lf').style.width = `${g.level * 100}%`;
-    el.querySelector('.gr').textContent =
-      g.left == null ? 'Missions left are measured after 1 finished mission' : `To target ~${g.left} missions${g.eta ? ` \u00b7 ~${duration(g.eta)}` : ''}${g.levelLeft != null ? ` \u00b7 level up ~${g.levelLeft} missions` : ''}`;
-    el.querySelector('.ll').textContent = `Lv ${g.current} \u2192 ${g.current + 1}: ${(g.level * 100).toFixed(1)}%${g.lastGain ? ` \u00b7 +${Math.round(g.lastGain).toLocaleString('en-US')} XP` : ''}`;
+    const gr = el.querySelector('.gr');
+    gr.textContent = g.left == null ? 'Missions left: measured after 1 finished mission' : `~${g.left} missions${g.eta ? ` \u00b7 ~${duration(g.eta)}` : ''} to Lv ${g.target}`;
+    gr.title = gr.textContent;
+    const ll = el.querySelector('.ll');
+    ll.textContent = `Lv ${g.current + 1}${g.levelLeft != null ? ` in ~${g.levelLeft} missions` : ''}`;
+    ll.title = `Lv ${g.current} \u2192 ${g.current + 1}: ${(g.level * 100).toFixed(1)}%`;
+    const lx = el.querySelector('.lx');
+    lx.textContent = g.xp != null ? `${fmt(g.xp)} / ${fmt(g.need)} XP` : 'XP from bar';
+    lx.title = `${g.xp != null ? 'Read from the HUD' : 'Estimated from the XP bar'}${ago != null ? ` \u00b7 ${ago ? `${ago} min ago` : 'just now'}` : ''}${g.lastGain ? ` \u00b7 last mission +${fmt(g.lastGain)} XP` : ''}`;
   }
 
   function statsRows() {
@@ -2744,146 +2762,139 @@
   }
 
   const host = document.createElement('div');
-  host.style.cssText = 'position:fixed;right:16px;bottom:16px;z-index:2147483647;';
+  host.style.cssText = 'position:fixed;right:12px;bottom:12px;z-index:2147483647;';
   const root = host.attachShadow({ mode: 'open' });
   root.innerHTML = `
     <style>
       :host{all:initial}
-      .p{font:13px/1.45 system-ui,-apple-system,sans-serif;background:#1c1c1e;color:#f2f2f7;border-radius:12px;width:min(760px,calc(100vw - 32px));max-height:calc(100vh - 32px);display:flex;flex-direction:column;box-shadow:0 12px 32px rgba(0,0,0,.45);border:1px solid #2c2c2e;overflow:hidden}
-      .hd{display:flex;align-items:center;gap:8px;padding:10px 12px 8px 14px}
-      .t{font-weight:600;font-size:14px;flex:1}
-      .dot{width:8px;height:8px;border-radius:50%;background:#636366}
-      .dot.on{background:#30d158;box-shadow:0 0 6px #30d158}
-      .ic{width:28px;height:28px;border:0;border-radius:7px;background:#2c2c2e;color:#f2f2f7;cursor:pointer;font-size:16px;line-height:1}
-      .ic:hover{background:#3a3a3c}
-      .s{padding:0 14px;color:#e5e5ea;min-height:20px;word-break:break-word}
-      .c{padding:2px 14px 10px;color:#8e8e93;font-size:12px}
-      .body{flex:1 1 auto;min-height:0;overflow:auto;border-top:1px solid #2c2c2e;columns:2;column-gap:0;column-rule:1px solid #2c2c2e}
-      .hd,.s,.c,.sp,.ft,.foot{flex:0 0 auto}
-      .sec{border-bottom:1px solid #2c2c2e;break-inside:avoid}
-      .sec>summary{list-style:none;cursor:pointer;padding:9px 14px;font-size:12px;font-weight:600;color:#aeaeb2;text-transform:uppercase;letter-spacing:.04em;display:flex;justify-content:space-between}
-      .sec>summary::-webkit-details-marker{display:none}
-      .sec>summary::after{content:"+";color:#636366;font-weight:400}
-      .sec[open]>summary::after{content:"\\2212"}
-      .in{padding:0 14px 10px}
-      .grid{display:grid;grid-template-columns:auto 1fr;gap:4px 12px;font-size:12px}
-      .grid .k{color:#8e8e93;white-space:nowrap}
-      .grid .v{color:#f2f2f7;text-align:right;word-break:break-word}
-      .grid .note{grid-column:1 / -1;color:#8e8e93;font-style:italic}
-      .grid .v.slow{color:#ff6961;font-weight:600}
-      .row{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:6px 0;font-size:12px;color:#e5e5ea}
-      .row select,.row input[type=number],.row input[type=text]{background:#2c2c2e;color:#f2f2f7;border:1px solid #3a3a3c;border-radius:7px;padding:4px 8px;font:12px system-ui,sans-serif;width:96px;box-sizing:border-box}
-      .row input[type=text]{width:140px}
-      .row select.w{width:140px}
-      .row input[type=checkbox]{width:16px;height:16px;accent-color:#0a84ff;margin:0}
-      .row select:disabled,.row input:disabled{opacity:.55;cursor:not-allowed}
-      .hint{color:#8e8e93;font-size:11px;margin:-2px 0 6px}
-      .sp{display:flex;gap:6px;padding:0 14px 12px}
-      .sp button{flex:1;padding:6px 0;border:0;border-radius:7px;background:#2c2c2e;color:#f2f2f7;font-weight:500;cursor:pointer}
-      .sp button.sel{background:#0a84ff;color:#fff}
-      .ft{display:flex;align-items:center;gap:10px;padding:12px 14px}
-      #b{flex:1;padding:9px;border:0;border-radius:8px;font-weight:600;font-size:13px;cursor:pointer;background:#30d158;color:#000}
-      #b.on{background:#ff453a;color:#fff}
-      .kbd{color:#636366;font-size:11px;white-space:nowrap}
-      .rep{padding:9px 12px;border:0;border-radius:8px;background:#3a3a3c;color:#ffd60a;font-weight:600;font-size:12px;cursor:pointer;white-space:nowrap}
-      .rep:hover{background:#48484a}
-      .foot{padding:0 14px 10px;margin-top:-4px}
-      .link{background:none;border:0;color:#0a84ff;padding:0;font-size:12px;cursor:pointer}
-      .p.min .body,.p.min .sp,.p.min .c{display:none}
-      .p.min .s{padding-bottom:4px}
-      .p.min{width:300px;max-height:none}
-      .grid .v{white-space:nowrap}
-      .goal{padding:0 14px 12px}
+      .p{--bg:#1c1c1e;--bg2:#2c2c2e;--bg3:#3a3a3c;--line:#2c2c2e;--fg:#f2f2f7;--fg2:#aeaeb2;--fg3:#8e8e93;--blue:#0a84ff;--green:#30d158;--red:#ff453a;--yellow:#ffd60a;
+        font:13px/1.45 system-ui,-apple-system,sans-serif;background:var(--bg);color:var(--fg);border-radius:14px;width:min(400px,calc(100vw - 24px));max-height:calc(100vh - 24px);display:flex;flex-direction:column;box-shadow:0 14px 36px rgba(0,0,0,.5);border:1px solid var(--line);overflow:hidden}
+      .p *{box-sizing:border-box}
+      .hd{display:flex;align-items:center;gap:8px;padding:10px 10px 6px 14px;cursor:grab;user-select:none;flex:0 0 auto}
+      .hd.drag{cursor:grabbing}
+      .t{font-weight:600;font-size:14px;flex:1;min-width:0}
+      .dot{width:8px;height:8px;border-radius:50%;background:#636366;flex:0 0 auto}
+      .dot.on{background:var(--green);box-shadow:0 0 6px var(--green)}
+      .chip{font-size:11px;font-weight:600;color:var(--fg2);background:var(--bg2);border-radius:6px;padding:2px 7px;font-variant-numeric:tabular-nums}
+      .ic{width:28px;height:28px;border:0;border-radius:8px;background:var(--bg2);color:var(--fg);cursor:pointer;font-size:16px;line-height:1;flex:0 0 auto}
+      .ic:hover{background:var(--bg3)}
+      .s{padding:0 14px;color:#e5e5ea;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:0 0 auto}
+      .c{padding:1px 14px 10px;color:var(--fg3);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:0 0 auto}
+      .goal{margin:0 10px 10px;padding:10px 12px;background:#242426;border-radius:10px;flex:0 0 auto}
       .goal[hidden]{display:none}
-      .goal .top,.goal .sub{display:flex;justify-content:space-between;gap:8px;font-size:12px}
-      .goal .gl{color:#e5e5ea}
-      .goal .gp{color:#30d158;font-weight:600;font-variant-numeric:tabular-nums}
-      .goal .bar{height:8px;border-radius:4px;background:#2c2c2e;overflow:hidden;margin:5px 0 4px}
-      .goal .gf{height:100%;background:#30d158;border-radius:4px;transition:width .4s ease}
-      .goal .lbar{height:5px;border-radius:3px;background:#2c2c2e;overflow:hidden;margin:4px 0 0}
-      .goal .lf{height:100%;background:#0a84ff;transition:width .4s ease}
-      .goal .sub{color:#8e8e93;font-size:11px;font-variant-numeric:tabular-nums}
+      .g1,.lrow{display:flex;align-items:baseline;justify-content:space-between;gap:10px;min-width:0}
+      .gl{font-weight:600;font-size:13px}
+      .gp{font-weight:700;font-size:15px;color:var(--green);font-variant-numeric:tabular-nums;white-space:nowrap}
+      .gp small{font-size:11px;font-weight:500;color:var(--fg3);margin-left:4px}
+      .bar{height:8px;border-radius:4px;background:var(--bg3);overflow:hidden;margin:6px 0}
+      .gf{height:100%;background:var(--green);border-radius:4px;transition:width .4s ease}
+      .gr{font-size:12px;color:var(--fg2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+      .lrow{margin-top:8px;font-size:11px;color:var(--fg3);font-variant-numeric:tabular-nums}
+      .lrow span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+      .lrow .lx{flex:0 0 auto}
+      .lbar{height:4px;border-radius:2px;background:var(--bg3);overflow:hidden;margin-top:4px}
+      .lf{height:100%;background:var(--blue);transition:width .4s ease}
+      .tabs{display:flex;gap:2px;margin:0 10px;padding:3px;background:var(--bg2);border-radius:9px;flex:0 0 auto}
+      .tabs button{flex:1;border:0;background:none;color:var(--fg2);font:600 12px system-ui,sans-serif;padding:6px 0;border-radius:7px;cursor:pointer}
+      .tabs button.sel{background:#48484a;color:var(--fg)}
+      .body{flex:1 1 auto;min-height:0;overflow:auto;padding:4px 14px 6px}
+      .pane{display:none}
+      .pane.sel{display:block}
+      h3{margin:12px 0 6px;font-size:11px;font-weight:600;color:var(--fg3);text-transform:uppercase;letter-spacing:.05em}
+      .sp{display:flex;gap:4px}
+      .sp button{flex:1;padding:6px 0;border:0;border-radius:7px;background:var(--bg2);color:var(--fg);font-weight:600;font-size:12px;cursor:pointer}
+      .sp button.sel{background:var(--blue);color:#fff}
+      .grid{display:grid;grid-template-columns:minmax(0,auto) minmax(0,1fr);gap:5px 14px;font-size:12px}
+      .grid .k{color:var(--fg3)}
+      .grid .v{color:var(--fg);text-align:right;overflow-wrap:anywhere;font-variant-numeric:tabular-nums}
+      .grid .note{grid-column:1 / -1;color:var(--fg3);font-style:italic}
+      .grid .v.slow{color:#ff6961;font-weight:600}
+      .row{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:30px;font-size:12px;color:#e5e5ea}
+      .row select,.row input[type=number],.row input[type=text]{background:var(--bg2);color:var(--fg);border:1px solid var(--bg3);border-radius:7px;padding:4px 8px;font:12px system-ui,sans-serif;width:96px;flex:0 0 auto}
+      .row input[type=text],.row select.w{width:140px}
+      .row input[type=checkbox]{width:16px;height:16px;accent-color:var(--blue);margin:0;flex:0 0 auto}
+      .row select:disabled,.row input:disabled{opacity:.55;cursor:not-allowed}
+      .hint{color:var(--fg3);font-size:11px;margin:0 0 6px}
+      .links{display:flex;gap:16px;margin:10px 0 4px}
+      .link{background:none;border:0;color:var(--blue);padding:0;font-size:12px;cursor:pointer}
+      .ft{display:flex;align-items:center;gap:8px;padding:10px 10px 6px;border-top:1px solid var(--line);flex:0 0 auto}
+      #b{flex:1;padding:9px;border:0;border-radius:9px;font-weight:700;font-size:13px;cursor:pointer;background:var(--green);color:#000}
+      #b.on{background:var(--red);color:#fff}
+      .rep{padding:9px 12px;border:0;border-radius:9px;background:var(--bg2);color:var(--yellow);font-weight:600;font-size:12px;cursor:pointer;white-space:nowrap}
+      .rep:hover{background:var(--bg3)}
+      .foot{padding:0 14px 8px;color:#636366;font-size:11px;flex:0 0 auto}
+      button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid var(--blue);outline-offset:1px}
+      .p.min{width:min(320px,calc(100vw - 24px))}
+      .p.min .tabs,.p.min .body,.p.min .c,.p.min .foot{display:none}
+      .p.min .goal{margin-bottom:0}
+      .p.min .ft{border-top:0}
     </style>
     <div class="p" id="p">
-      <div class="hd"><span class="dot" id="dot"></span><span class="t">Ninja Saga Bot</span><button class="ic" id="mn" title="Collapse / expand panel">\u2212</button></div>
+      <div class="hd" id="hd" title="Drag to move · double-click to reset position"><span class="dot" id="dot"></span><span class="t">Ninja Saga Bot</span><span class="chip" id="spd"></span><button class="ic" id="mn" title="Collapse / expand panel">−</button></div>
       <div class="s" id="s">Idle</div>
-      <div class="c" id="c">Missions: 0 | Turns: 0</div>
+      <div class="c" id="c">Missions: 0 · Turns: 0</div>
       <div class="goal" id="goal" hidden>
-        <div class="top"><span class="gl"></span><span class="gp"></span></div>
+        <div class="g1"><span class="gl"></span><span class="gp"></span></div>
         <div class="bar"><div class="gf"></div></div>
-        <div class="sub"><span class="gr"></span><span class="ll"></span></div>
+        <div class="gr"></div>
+        <div class="lrow"><span class="ll"></span><span class="lx"></span></div>
         <div class="lbar"><div class="lf"></div></div>
       </div>
-      <div class="sp" id="sp">
-        <button data-v="1">1x</button><button data-v="2">2x</button><button data-v="3">3x</button><button data-v="4">4x</button><button data-v="5">5x</button>
+      <div class="tabs" role="tablist">
+        <button data-tab="overview" role="tab">Overview</button><button data-tab="setup" role="tab">Setup</button><button data-tab="cheats" role="tab">Cheats</button><button data-tab="system" role="tab">System</button>
       </div>
       <div class="body" id="cfg">
-        <details class="sec" data-sec="progress" open>
-          <summary>Progress</summary>
-          <div class="in"><div class="grid" id="st"></div></div>
-        </details>
-        <details class="sec" data-sec="steps" open>
-          <summary>Steps</summary>
-          <div class="in">
-            <div class="grid" id="steps"></div>
-          </div>
-        </details>
-        <details class="sec" data-sec="char">
-          <summary>Character &amp; level</summary>
-          <div class="in">
-            <div class="row">Character slot (1-6)<input type="number" min="1" max="6" data-k="characterSlot"></div>
-            <div class="row">Current level<input type="number" min="0" max="100" data-k="currentLevel"></div>
-            <div class="row">Target level (0 = auto)<input type="number" min="0" max="100" data-k="targetLevel"></div>
-            <div class="row">Stop at levels<input type="text" data-k="stopLevels"></div>
-            <div class="hint">The level updates automatically on every Level Up and from the HUD. The bot stops in the village when the target or an exam level is reached. Target 0 = next exam level.</div>
-          </div>
-        </details>
-        <details class="sec" data-sec="mission">
-          <summary>Missions</summary>
-          <div class="in">
-            <div class="row">Auto highest-XP mission<input type="checkbox" data-k="autoBestXp"></div>
-            <div class="hint" id="autoinfo"></div>
-            <div class="row">Grade<select data-k="grade"><option>A</option><option>B</option><option>C</option></select></div>
-            <div class="row">Page<input type="number" min="1" max="20" data-k="page"></div>
-            <div class="row">Row<select data-k="row"><option value="1">1</option><option value="2">2</option><option value="3">3</option></select></div>
-          </div>
-        </details>
-        <details class="sec" data-sec="battle">
-          <summary>Battle</summary>
-          <div class="in">
-            <div class="row">Attack style<select class="w" data-k="attackStyle"><option value="basic">Basic attack</option><option value="jutsu">Jutsu</option></select></div>
-            <div class="row">Jutsu slot order<input type="text" data-k="slotOrder"></div>
-            <div class="row">Heal slot (0 = none)<input type="number" min="0" max="8" data-k="healSlot"></div>
-            <div class="hint">Slots 1-4 left, 5-8 right of the Attack button. Saved per mission.</div>
-          </div>
-        </details>
-        <details class="sec" data-sec="cheat">
-          <summary>Cheat</summary>
-          <div class="in">
-            <div class="row">Mode<select class="w" data-k="mode"><option value="auto">Auto bot</option><option value="cheat">Cheat only</option></select></div>
-            <div class="hint">Cheat only: you play yourself; the bot only applies the ticked cheats.</div>
-            <div class="row">Jutsu damage (AOB)<input type="checkbox" data-k="patchMemory"></div>
-            <div class="row">Basic attack 400000<input type="checkbox" data-k="attackCheat"></div>
-            <div class="row">Lock chakra<input type="checkbox" data-k="lockChakra"></div>
-            <div class="hint">A patch that is switched off stays in memory until the page is reloaded.</div>
-          </div>
-        </details>
-        <details class="sec" data-sec="misc">
-          <summary>Other</summary>
-          <div class="in">
-            <div class="row">Game sound<input type="checkbox" id="snd"></div>
-            <div class="row">Auto recovery (reload)<input type="checkbox" data-k="autoRecover"></div>
-            <div class="row">Stable turbo (auto speed)<input type="checkbox" data-k="turbo"></div>
-            <div class="hint">Battles use the highest safe speed, everything else one step lower; drops by itself on an error and climbs again after 25 clean missions.</div>
-            <div class="row">Extreme battle (up to 8x)<input type="checkbox" data-k="battleBoost"></div>
-            <div class="hint">Experimental: battles climb one step every 5 clean missions up to 8x and drop on an error. Needs Turbo; the first time, the page reloads in the village.</div>
-            <div class="row"><button class="link" id="tr">Reset turbo</button></div>
-            <div class="row"><button class="link" id="rs">Reset mission stats</button></div>
-          </div>
-        </details>
+        <section class="pane" data-pane="overview">
+          <h3>Speed</h3>
+          <div class="sp" id="sp"><button data-v="1">1x</button><button data-v="2">2x</button><button data-v="3">3x</button><button data-v="4">4x</button><button data-v="5">5x</button></div>
+          <h3>Progress</h3>
+          <div class="grid" id="st"></div>
+          <h3>Steps (last mission)</h3>
+          <div class="grid" id="steps"></div>
+        </section>
+        <section class="pane" data-pane="setup">
+          <h3>Character &amp; level</h3>
+          <div class="row">Character slot (1-6)<input type="number" min="1" max="6" data-k="characterSlot"></div>
+          <div class="row">Current level<input type="number" min="0" max="100" data-k="currentLevel"></div>
+          <div class="row">Target level (0 = auto)<input type="number" min="0" max="100" data-k="targetLevel"></div>
+          <div class="row">Stop at levels<input type="text" data-k="stopLevels"></div>
+          <div class="hint">Current level follows the HUD. The bot stops in the village at the target or an exam level; target 0 = next exam level.</div>
+          <h3>Mission</h3>
+          <div class="row">Auto highest-XP mission<input type="checkbox" data-k="autoBestXp"></div>
+          <div class="hint" id="autoinfo"></div>
+          <div class="row">Grade<select data-k="grade"><option>A</option><option>B</option><option>C</option></select></div>
+          <div class="row">Page<input type="number" min="1" max="20" data-k="page"></div>
+          <div class="row">Row<select data-k="row"><option value="1">1</option><option value="2">2</option><option value="3">3</option></select></div>
+          <h3>Battle</h3>
+          <div class="row">Attack style<select class="w" data-k="attackStyle"><option value="basic">Basic attack</option><option value="jutsu">Jutsu</option></select></div>
+          <div class="row">Jutsu slot order<input type="text" data-k="slotOrder"></div>
+          <div class="row">Heal slot (0 = none)<input type="number" min="0" max="8" data-k="healSlot"></div>
+          <div class="hint">Slots 1-4 left, 5-8 right of the Attack button. Saved per mission.</div>
+        </section>
+        <section class="pane" data-pane="cheats">
+          <h3>Mode</h3>
+          <div class="row">Mode<select class="w" data-k="mode"><option value="auto">Auto bot</option><option value="cheat">Cheat only</option></select></div>
+          <div class="hint">Cheat only: you play yourself; the bot only applies the ticked cheats.</div>
+          <h3>Cheats</h3>
+          <div class="row">Jutsu damage (AOB)<input type="checkbox" data-k="patchMemory"></div>
+          <div class="row">Basic attack 400000<input type="checkbox" data-k="attackCheat"></div>
+          <div class="row">Lock chakra<input type="checkbox" data-k="lockChakra"></div>
+          <div class="hint">A patch that is switched off stays in memory until the page is reloaded.</div>
+        </section>
+        <section class="pane" data-pane="system">
+          <h3>Speed control</h3>
+          <div class="row">Stable turbo (auto speed)<input type="checkbox" data-k="turbo"></div>
+          <div class="hint">Battles at the highest safe speed, everything else one step lower; drops on an error, climbs again after 25 clean missions.</div>
+          <div class="row">Extreme battle (up to 8x)<input type="checkbox" data-k="battleBoost"></div>
+          <div class="hint">Experimental: climbs one step every 5 clean missions up to 8x. Needs Turbo.</div>
+          <h3>Behaviour</h3>
+          <div class="row">Auto recovery (reload)<input type="checkbox" data-k="autoRecover"></div>
+          <div class="row">Game sound<input type="checkbox" id="snd"></div>
+          <div class="links"><button class="link" id="tr">Reset turbo</button><button class="link" id="rs">Reset mission stats</button></div>
+        </section>
       </div>
       <div class="ft"><button id="b">Start</button><button class="rep" id="slow" title="Save the current step and screen for analysis">Report slow</button></div>
-      <div class="kbd foot" id="slowok">Alt+S: Start/Stop</div>
+      <div class="foot" id="slowok">Alt+S: Start/Stop</div>
     </div>`;
   document.body.appendChild(host);
   const $s = root.getElementById('s');
@@ -2894,6 +2905,7 @@
   const $st = root.getElementById('st');
   const $goal = root.getElementById('goal');
   const $dot = root.getElementById('dot');
+  const $spd = root.getElementById('spd');
   const $steps = root.getElementById('steps');
   root.getElementById('slow').addEventListener('click', () => {
     reportSlow();
@@ -2937,18 +2949,69 @@
   };
   applyMin(storage.get('nsPanelMin') === '1');
   $min.addEventListener('click', () => applyMin(!$panel.classList.contains('min')));
-  let openSections = {};
-  try {
-    openSections = JSON.parse(storage.get('nsPanelSections') || '{}') || {};
-  } catch (e) {
-    openSections = {};
-  }
-  root.querySelectorAll('details.sec').forEach((d) => {
-    if (openSections[d.dataset.sec] !== undefined) d.open = openSections[d.dataset.sec];
-    d.addEventListener('toggle', () => {
-      openSections[d.dataset.sec] = d.open;
-      storage.set('nsPanelSections', JSON.stringify(openSections));
+  const selectTab = (name) => {
+    root.querySelectorAll('[data-tab]').forEach((t) => {
+      t.classList.toggle('sel', t.dataset.tab === name);
+      t.setAttribute('aria-selected', String(t.dataset.tab === name));
     });
+    root.querySelectorAll('[data-pane]').forEach((p) => p.classList.toggle('sel', p.dataset.pane === name));
+    storage.set('nsPanelTab', name);
+  };
+  root.querySelectorAll('[data-tab]').forEach((t) => t.addEventListener('click', () => selectTab(t.dataset.tab)));
+  selectTab(['overview', 'setup', 'cheats', 'system'].includes(storage.get('nsPanelTab')) ? storage.get('nsPanelTab') : 'overview');
+
+  /*
+   * The panel can be dragged by its header so it never has to cover the part of the game being
+   * watched; the spot is remembered and kept inside the window, and a double-click puts it back
+   * in the bottom-right corner.
+   */
+  const $hd = root.getElementById('hd');
+  const placeHost = (pos) => {
+    if (!pos) {
+      host.style.left = host.style.top = '';
+      host.style.right = host.style.bottom = '12px';
+      return;
+    }
+    const r = host.getBoundingClientRect();
+    const x = Math.max(4, Math.min(window.innerWidth - r.width - 4, pos.x));
+    const y = Math.max(4, Math.min(window.innerHeight - Math.min(r.height, 60) - 4, pos.y));
+    host.style.right = host.style.bottom = '';
+    host.style.left = `${x}px`;
+    host.style.top = `${y}px`;
+  };
+  const savedPos = (() => {
+    try {
+      return JSON.parse(storage.get('nsPanelPos') || 'null');
+    } catch (e) {
+      return null;
+    }
+  })();
+  placeHost(savedPos);
+  $hd.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0 || e.target.closest('button')) return;
+    const r = host.getBoundingClientRect();
+    const dx = e.clientX - r.left;
+    const dy = e.clientY - r.top;
+    $hd.classList.add('drag');
+    $hd.setPointerCapture(e.pointerId);
+    const move = (ev) => placeHost({ x: ev.clientX - dx, y: ev.clientY - dy });
+    const up = () => {
+      $hd.classList.remove('drag');
+      $hd.removeEventListener('pointermove', move);
+      $hd.removeEventListener('pointerup', up);
+      const box = host.getBoundingClientRect();
+      storage.set('nsPanelPos', JSON.stringify({ x: box.left, y: box.top }));
+    };
+    $hd.addEventListener('pointermove', move);
+    $hd.addEventListener('pointerup', up);
+  });
+  $hd.addEventListener('dblclick', (e) => {
+    if (e.target.closest('button')) return;
+    storage.set('nsPanelPos', null);
+    placeHost(null);
+  });
+  window.addEventListener('resize', () => {
+    if (host.style.left) placeHost({ x: parseFloat(host.style.left), y: parseFloat(host.style.top) });
   });
 
   /*
@@ -3209,8 +3272,10 @@
     trackStep(text);
     state.status = text;
     $s.textContent = text;
-    const lock = chakra.at >= 0 ? ` | Chakra locked ${chakra.lockValue}` : '';
-    $c.textContent = `Missions: ${state.missions} | Turns: ${state.turns}${lock}`;
+    $s.title = text;
+    const lock = chakra.at >= 0 ? ` \u00b7 Chakra locked ${chakra.lockValue}` : '';
+    $c.textContent = `Missions: ${state.missions} \u00b7 Turns: ${state.turns}${lock}`;
+    $spd.textContent = `${currentSpeed()}x`;
     renderStats($st);
     renderGoal($goal);
     renderSteps($steps);
@@ -3324,6 +3389,9 @@
     return navigator.brave ? 'Brave' : (brands.find((b) => /Chrome|Edge|Opera/.test(b.brand)) || { brand: 'Chromium' }).brand;
   })();
   let telemetryTick = 0;
+  const sentShots = new Set();
+  let lastFrames = null;
+  let lastFramesAt = 0;
   function screenThumb() {
     const st = stage();
     if (!st) return null;
@@ -3349,10 +3417,24 @@
       report = null;
     }
     const image = telemetryTick++ % 4 === 0 ? screenThumb() : null;
+    const w = gameWindow();
+    const frames = w && typeof w.__nsFrameCount === 'number' ? w.__nsFrameCount : null;
+    const fps = frames != null && lastFrames != null ? +((frames - lastFrames) / ((Date.now() - lastFramesAt) / 1000)).toFixed(1) : null;
+    lastFrames = frames;
+    lastFramesAt = Date.now();
+    let shots = [];
+    try {
+      shots = JSON.parse(storage.get(UNKNOWN_KEY) || '[]')
+        .filter((u) => u.image && !sentShots.has(u.at))
+        .map((u) => ({ at: u.at, note: u.note, status: u.status, image: u.image }));
+    } catch (e) {
+      shots = [];
+    }
+    shots.forEach((u) => sentShots.add(u.at));
     window.postMessage({
       source: 'nsBot',
       type: 'telemetry',
-      data: { at: new Date().toISOString(), browser: browserName, hidden: document.hidden, running: state.running, status: state.status, missions: state.missions, turns: state.turns, report, image },
+      data: { at: new Date().toISOString(), browser: browserName, hidden: document.hidden, running: state.running, status: state.status, missions: state.missions, turns: state.turns, fps, report, image, shots },
     }, '*');
   }
   telemetryLoop();

@@ -96,19 +96,57 @@ function stopDevServer() {
   nativePort = null;
 }
 
+/*
+ * Telemetry is relayed only from the game site's tabs, at most once a second, and rebuilt from a
+ * fixed set of fields with bounded sizes rather than forwarded as received.
+ */
+let lastTelemetryAt = 0;
+const clip = (v, n) => (typeof v === 'string' ? v.slice(0, n) : null);
+function relayTelemetry(data, sender) {
+  if (sender.id !== chrome.runtime.id || !sender.tab || !/^https:\/\/ninjasaga\.cc\//.test(sender.url || '')) return;
+  if (!data || typeof data !== 'object' || Date.now() - lastTelemetryAt < 1000) return;
+  lastTelemetryAt = Date.now();
+  let report = null;
+  try {
+    report = JSON.stringify(data.report || null);
+    report = report.length <= 200000 ? JSON.parse(report) : null;
+  } catch (e) {
+    report = null;
+  }
+  const image = clip(data.image, 1500000);
+  const payload = {
+    at: clip(data.at, 40),
+    browser: clip(data.browser, 40),
+    hidden: !!data.hidden,
+    running: !!data.running,
+    status: clip(data.status, 300),
+    missions: Number(data.missions) || 0,
+    turns: Number(data.turns) || 0,
+    fps: Number.isFinite(Number(data.fps)) && data.fps !== null ? Number(data.fps) : null,
+    tabId: sender.tab.id,
+    report,
+    image: image && image.startsWith('data:image/jpeg;base64,') ? image : null,
+    shots: (Array.isArray(data.shots) ? data.shots : []).slice(0, 3).map((u) => ({
+      at: clip(u && u.at, 40),
+      note: clip(u && u.note, 120),
+      status: clip(u && u.status, 200),
+      image: typeof (u && u.image) === 'string' && u.image.startsWith('data:image/jpeg;base64,') ? u.image.slice(0, 300000) : null,
+    })),
+  };
+  fetch('http://127.0.0.1:8777/telemetry', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-NS-Bot': '1' },
+    body: JSON.stringify(payload),
+  }).catch(() => {});
+}
+
 chrome.runtime.onMessage.addListener((msg, sender) => {
   if (!msg) return;
   if (msg.type === 'devCheck') {
     if (msg.fresh && sender.tab) chrome.storage.session.remove(`botHash_${sender.tab.id}`);
     devCheck(sender.tab && sender.tab.id);
   }
-  else if (msg.type === 'telemetry') {
-    fetch('http://127.0.0.1:8777/telemetry', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...msg.data, tabId: sender.tab && sender.tab.id }),
-    }).catch(() => {});
-  }
+  else if (msg.type === 'telemetry') relayTelemetry(msg.data, sender);
   else if (msg.type === 'bot-start') startDevServer();
   else if (msg.type === 'bot-stop') stopDevServer();
 });

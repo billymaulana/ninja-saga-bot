@@ -297,6 +297,7 @@
       if (done) return;
       done = true;
       pendingFrames.delete(run);
+      window.__nsFrameCount = (window.__nsFrameCount || 0) + 1;
       cb(ts);
     };
     pendingFrames.add(run);
