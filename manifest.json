@@ -1,0 +1,33 @@
+{
+  "manifest_version": 3,
+  "name": "Ninja Saga Mission Bot",
+  "version": "1.2.0",
+  "description": "Auto-run misi Ninja Saga dengan patch memori, kunci chakra, speed, dan hot reload saat development.",
+  "permissions": ["scripting", "storage", "tabs", "nativeMessaging"],
+  "host_permissions": ["https://ninjasaga.cc/*", "http://127.0.0.1:8777/*"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://ninjasaga.cc/emulator*"],
+      "js": ["hook.js"],
+      "run_at": "document_start",
+      "all_frames": true,
+      "world": "MAIN"
+    },
+    {
+      "matches": ["https://ninjasaga.cc/*"],
+      "exclude_matches": ["https://ninjasaga.cc/emulator*"],
+      "js": ["bot.js"],
+      "run_at": "document_idle",
+      "world": "MAIN"
+    },
+    {
+      "matches": ["https://ninjasaga.cc/*"],
+      "exclude_matches": ["https://ninjasaga.cc/emulator*"],
+      "js": ["poller.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

@@ -1,0 +1,7 @@
+{
+  "name": "com.billy.nsbot",
+  "description": "Ninja Saga bot dev server",
+  "path": "/Users/billymaulana/ninja-saga-bot/native-host.js",
+  "type": "stdio",
+  "allowed_origins": ["chrome-extension://ngacfafcjcoipbnboiojepihgbjalonb/"]
+}
